@@ -410,6 +410,22 @@ Install-O2InteractiveTask -Name "O2QueueWorker" -ScriptPath (Join-Path $InstallD
 Install-O2InteractiveTask -Name "O2RenderServer" -ScriptPath (Join-Path $InstallDir "start-render-server.bat")
 
 Write-Host ""
+Write-Step "Verifying the installed code isn't a stale bundle..."
+# Catches exactly the class of bug that took hours to diagnose on POS-012 on
+# 2026-09-06: the installer's bundle/app folder wasn't refreshed after a
+# backend printing fix, so the station silently kept running old code (one
+# file at a time turned out to be stale - run-hidden.vbs, start-queue-worker.bat,
+# PrintInvoiceJob.php, OrderPrintingService.php, render-server.js,
+# ReceiptImageBuilder.php). Run this same check any time against an existing
+# station: installer\verify-station.ps1 -InstallDir "<path>".
+$verifyScript = Join-Path $PSScriptRoot "verify-station.ps1"
+if (Test-Path $verifyScript) {
+    & $verifyScript -InstallDir $InstallDir
+} else {
+    Write-Warn2 "verify-station.ps1 not found next to provision.ps1 - skipping the stale-bundle check."
+}
+
+Write-Host ""
 Write-Host "Done! Cashier station fully set up:" -ForegroundColor Green
 Write-Host "  - O2PrintBridge: Windows Service (services.msc)" -ForegroundColor Green
 Write-Host "  - O2QueueWorker, O2RenderServer: Scheduled Tasks that start at logon" -ForegroundColor Green

@@ -65,6 +65,7 @@ Source: "bundle\chrome\*"; DestDir: "{app}\chrome"; Flags: recursesubdirs create
 Source: "bundle\nssm\nssm.exe"; DestDir: "{app}\tools"; Flags: ignoreversion
 Source: "bundle\app\*"; DestDir: "{app}\backend"; Excludes: ".env,.git\*"; Flags: recursesubdirs createallsubdirs ignoreversion
 Source: "provision.ps1"; DestDir: "{app}"; Flags: ignoreversion
+Source: "verify-station.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "stop-o2-tasks.ps1"; DestDir: "{app}"; Flags: ignoreversion
 
 [Code]
