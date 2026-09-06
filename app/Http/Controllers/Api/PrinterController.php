@@ -65,17 +65,6 @@ class PrinterController extends Controller
             ], 400);
         }
 
-        // فحص عدم التكرار
-        $exists = Printer::where('branch_id', $branchId)
-            ->where('ip_address', $validated['ip_address'])
-            ->exists();
-
-        if ($exists) {
-            throw ValidationException::withMessages([
-                'ip_address' => 'طابعة بهذا العنوان موجودة مسبقاً في هذا الفرع',
-            ]);
-        }
-
         // التحقق من الحقول حسب النوع
         if ($validated['type'] === 'CASHIER') {
             if (empty($validated['linked_pos_register_id'])) {
@@ -93,6 +82,28 @@ class PrinterController extends Controller
                     'department_ids' => 'يجب تحديد قسم واحد على الأقل لطابعة الأقسام',
                 ]);
             }
+        }
+
+        // فحص عدم التكرار
+        // طابعات الكاشير المربوطة بـUSB بتستخدم 127.0.0.1 محليًا على جهاز كل
+        // محطة على حدة (كل محطة إلها print-bridge محلي خاص فيها) - نفس
+        // العنوان بيتكرر بشكل طبيعي ومتوقع بين محطات مختلفة بنفس الفرع. أما
+        // طابعة شبكة حقيقية (IP زي 192.168.1.50) فعنوانها فريد فعليًا لجهاز
+        // واحد بالشبكة، فلازم يضل التكرار ممنوع على مستوى الفرع كامل - غير
+        // هيك ما منقدر نمسك غلطة تكرار نفس IP الشبكة بمحطتين مختلفتين بالخطأ.
+        $duplicateQuery = Printer::where('branch_id', $branchId)
+            ->where('ip_address', $validated['ip_address']);
+
+        if ($validated['type'] === 'CASHIER' && $this->isLoopbackAddress($validated['ip_address'])) {
+            $duplicateQuery->where('linked_pos_register_id', $validated['linked_pos_register_id']);
+        }
+
+        if ($duplicateQuery->exists()) {
+            throw ValidationException::withMessages([
+                'ip_address' => $validated['type'] === 'CASHIER'
+                    ? 'هذه المحطة (POS) عندها طابعة كاشير مربوطة بنفس العنوان مسبقاً'
+                    : 'طابعة بهذا العنوان موجودة مسبقاً في هذا الفرع',
+            ]);
         }
 
         $printer = Printer::create([
@@ -167,21 +178,33 @@ class PrinterController extends Controller
             'item_ids.*'             => 'integer|exists:items,id',
         ]);
 
-        // فحص عدم التكرار عند تغيير IP
-        if (isset($validated['ip_address'])) {
-            $exists = Printer::where('branch_id', $branchId)
-                ->where('ip_address', $validated['ip_address'])
-                ->where('id', '!=', $id)
-                ->exists();
+        $printerType = $validated['type'] ?? $printer->type;
+        $resolvedPosRegisterId = array_key_exists('linked_pos_register_id', $validated)
+            ? $validated['linked_pos_register_id']
+            : $printer->linked_pos_register_id;
 
-            if ($exists) {
+        // فحص عدم التكرار عند تغيير IP (نفس منطق store() أعلاه - طابعات
+        // الكاشير المربوطة بـUSB بتستخدم 127.0.0.1 محليًا فلازم نميزها حسب
+        // محطة الكاشير (linked_pos_register_id) مش الفرع لحاله. طابعة شبكة
+        // حقيقية (IP فعلي) بتضل خاضعة لتفرد كامل الفرع لأنه عنوانها فريد
+        // فعليًا لجهاز واحد بالشبكة).
+        if (isset($validated['ip_address'])) {
+            $duplicateQuery = Printer::where('branch_id', $branchId)
+                ->where('ip_address', $validated['ip_address'])
+                ->where('id', '!=', $id);
+
+            if ($printerType === 'CASHIER' && $this->isLoopbackAddress($validated['ip_address'])) {
+                $duplicateQuery->where('linked_pos_register_id', $resolvedPosRegisterId);
+            }
+
+            if ($duplicateQuery->exists()) {
                 throw ValidationException::withMessages([
-                    'ip_address' => 'طابعة بهذا العنوان موجودة مسبقاً في هذا الفرع',
+                    'ip_address' => $printerType === 'CASHIER'
+                        ? 'هذه المحطة (POS) عندها طابعة كاشير مربوطة بنفس العنوان مسبقاً'
+                        : 'طابعة بهذا العنوان موجودة مسبقاً في هذا الفرع',
                 ]);
             }
         }
-
-        $printerType = $validated['type'] ?? $printer->type;
 
         // التحقق من الحقول حسب النوع
         if ($printerType === 'CASHIER') {
@@ -275,6 +298,17 @@ class PrinterController extends Controller
     }
 
     // ── Helpers ──────────────────────────────────────────────
+
+    /**
+     * عنوان "محلي" بيرجع لنفس الجهاز يلي شغّل عليه العملية - مش عنوان شبكة
+     * حقيقي فريد لجهاز واحد. طابعات USB المربوطة عبر print-bridge المحلي
+     * (كل محطة كاشير إلها نسخة خاصة فيها شغالة على جهازها) بتستخدم هيك عنوان،
+     * فتكراره بين محطات مختلفة بنفس الفرع طبيعي ومتوقع.
+     */
+    private function isLoopbackAddress(string $ip): bool
+    {
+        return in_array(strtolower(trim($ip)), ['127.0.0.1', 'localhost', '::1'], true);
+    }
 
     private function resolveBranchId(Request $request): ?int
     {

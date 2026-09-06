@@ -67,17 +67,34 @@ class EscPosPrinterDriver implements PrinterDriverInterface
         try {
             $escpos = $this->connect($printer);
 
-            $img = EscposImage::load($imagePath);
+            // Validate the file directly via getimagesize() BEFORE handing it
+            // to EscposImage. EscposImage::getWidth()/getHeight() only
+            // reflect real values *after* something has triggered its lazy
+            // pixel-loading (e.g. toRasterFormat(), called internally by
+            // bitImage() below) — calling them beforehand always returns 0
+            // regardless of whether the image is actually valid, which is
+            // NOT a sign of corruption. getimagesize() has no such lazy
+            // loading quirk, so it's the reliable way to catch a genuinely
+            // corrupt/degenerate render before wasting paper on it.
+            $dimensions = @getimagesize($imagePath);
 
             Log::info('ESC/POS bitImage', [
                 'printer'     => $printer->name,
                 'image_path'  => $imagePath,
                 'file_exists' => file_exists($imagePath),
                 'file_size'   => file_exists($imagePath) ? filesize($imagePath) : 0,
-                'img_width'   => $img->getWidth(),
-                'img_height'  => $img->getHeight(),
-                'width_bytes' => $img->getWidthBytes(),
+                'img_width'   => $dimensions[0] ?? 0,
+                'img_height'  => $dimensions[1] ?? 0,
             ]);
+
+            if (! $dimensions || $dimensions[0] <= 0 || $dimensions[1] <= 0) {
+                throw new \RuntimeException(
+                    'Rendered receipt image is invalid (width=' . ($dimensions[0] ?? 0)
+                        . ', height=' . ($dimensions[1] ?? 0) . ') — refusing to print a blank page.'
+                );
+            }
+
+            $img = EscposImage::load($imagePath);
 
             $escpos->bitImage($img);
 
@@ -87,9 +104,10 @@ class EscPosPrinterDriver implements PrinterDriverInterface
             return $this->success($printer);
         } catch (\Exception $e) {
             Log::error('ESC/POS bitImage failed', [
-                'printer' => $printer->name,
-                'path'    => $imagePath,
-                'error'   => $e->getMessage(),
+                'printer'    => $printer->name,
+                'path'       => $imagePath,
+                'error'      => $e->getMessage(),
+                'error_type' => get_class($e),
             ]);
             return $this->error($printer, $e);
         } finally {
@@ -185,9 +203,18 @@ class EscPosPrinterDriver implements PrinterDriverInterface
             );
         }
 
-        $profile = CapabilityProfile::load('default');
+        try {
+            $profile = CapabilityProfile::load('default');
 
-        return new EscposPrinter($connector, $profile);
+            return new EscposPrinter($connector, $profile);
+        } catch (\Throwable $e) {
+            // إذا فشل أي شيء بعد فتح الاتصال وقبل إرجاع كائن الطابعة، لازم نصفّي
+            // (finalize) الموصل هون بنفسنا. غير هيك، pas destructor العنصر اليتيم
+            // رح يطلق "Print connector was not finalized" (via trigger_error) لما
+            // يتحرر من الذاكرة، وهاد بيحجب رسالة الخطأ الحقيقية اللي صارت هون.
+            try { $connector->finalize(); } catch (\Throwable $ignored) {}
+            throw $e;
+        }
     }
 
     private function close(?EscposPrinter $escpos): void

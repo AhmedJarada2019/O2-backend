@@ -22,6 +22,7 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Log;
 use App\Services\Accounting\TransactionPostingService;
 use App\Jobs\PrintInvoiceJob;
 use App\Jobs\PrintTicketsJob;
@@ -39,7 +40,7 @@ class OrderController extends ApiController
 
         $eager = $isActiveOnly
             ? ['items.department', 'tickets.department', 'cashier']
-            : ['items.department', 'tickets.department', 'cashier', 'invoice.payments'];
+            : ['items.department', 'tickets.department', 'cashier', 'invoice.payments.paymentMethod'];
 
         $orders = Order::with($eager)
             ->when($request->branch_id, fn($q) => $q->where('branch_id', $request->branch_id))
@@ -87,6 +88,7 @@ class OrderController extends ApiController
                 'shift_id' => $shift->id,
                 'opened_by' => $authUser->id,
                 'order_type' => $data['order_type'],
+                'is_fawri' => $data['is_fawri'] ?? false,
                 'status' => 'pending',
                 'table_number' => $data['table_number'] ?? null,
                 'customer_name' => $data['customer_name'] ?? null,
@@ -161,7 +163,7 @@ class OrderController extends ApiController
                 'tickets.department',
                 'cashier',
                 'invoice.items',
-                'invoice.payments',
+                'invoice.payments.paymentMethod',
             ]))
         );
     }
@@ -593,7 +595,7 @@ class OrderController extends ApiController
 
             return $this->success(
                 'تم عكس/إلغاء البيع بنجاح',
-                new OrderResource($order->fresh(['items', 'invoice.payments']))
+                new OrderResource($order->fresh(['items', 'invoice.payments.paymentMethod']))
             );
         } catch (\Throwable $e) {
             \Log::error('فشل Void للطلب #' . $order->id, [
@@ -956,7 +958,7 @@ class OrderController extends ApiController
      * Chrome كامل، لا يجوز حجز الـ request عليه). الاستجابة هون تأكيد إرسال
      * أمر الطباعة فقط، مش تأكيد نجاح الطباعة الفعلي على الطابعة.
      */
-    public function printInvoice(Order $order): JsonResponse
+    public function printInvoice(Order $order, \App\Services\Printing\OrderPrintingService $printingService): JsonResponse
     {
         // قفل قصير جداً يمنع بس تكرار فعلي بنفس اللحظة (ضغطة مزدوجة/طلب
         // مكرر من الواجهة خلال نفس الثانية) — مش مقصود يمنع إعادة طباعة
@@ -969,20 +971,53 @@ class OrderController extends ApiController
 
         $printerId = request('printer_id');
 
+        // هوية محطة الكاشير الفعلية يلي طلبت الطباعة (posInfo.id بالواجهة،
+        // مُخزّن وقت تفعيل الجهاز). لازم نثق فيها بدل ما "نخمّن" أي طابعة
+        // كاشير فعّالة بالفرع - التخمين هو يلي كان يسبب طباعة فاتورة محطة
+        // على طابعة محطة تانية بالغلط لما يصير أكتر من محطة كاشير بنفس الفرع.
+        $posRegisterId = request('pos_register_id');
+
         // mode: 'all' | 'merged' | 'departments' | 'fawri' (فاتورة كل قسم على طابعة الكاشير)
         $mode = request('mode', 'all');
         if (!in_array($mode, ['all', 'merged', 'departments', 'fawri'], true)) {
             $mode = 'all';
         }
 
-        // dispatchAfterResponse: تنفّذ بنفس عملية PHP بعد إرسال الرد للمتصفّح،
-        // بدون الاعتماد على queue worker خارجي (كان لازم يضل شغّال وإلا ما بتطبع).
-        PrintInvoiceJob::dispatchAfterResponse(
+        // لازم تمر عبر queue حقيقي (مو dispatchAfterResponse) لأن طابعة الكاشير
+        // USB (127.0.0.1) لازم تُنفَّذ فعلياً على جهاز الكاشير نفسه عبر queue:work
+        // الشغال عنده محلياً (start-queue-worker.bat) — dispatchAfterResponse كانت
+        // تنفّذ على السيرفر المركزي مباشرة، فكان "127.0.0.1" يرجع لحاله (السيرفر)
+        // بدل جهاز الكاشير، فتفشل الطباعة دايماً بـ Connection refused.
+        //
+        // ->onQueue(...) بتوجّه الوظيفة لقائمة خاصة بنقطة البيع (PosRegister)
+        // المرتبطة بالطابعة المستهدفة، بدل قائمة "default" المشتركة بين كل
+        // محطات الكاشير — هيك مستحيل queue worker بمحطة تانية ياخد طلب مش
+        // الو ويطبعه غلط على طابعة تانية. راجع resolveQueueForOrder().
+        $queue = $printingService->resolveQueueForOrder(
+            $order,
+            $printerId ? (int) $printerId : null,
+            $posRegisterId ? (int) $posRegisterId : null,
+        );
+
+        // تشخيص مؤقت لمتابعة تسريبات الطباعة بين المحطات - راقب هاد اللوغ
+        // لو صارت فاتورة محطة تطبع على طابعة محطة تانية بالغلط: لو
+        // received_pos_register_id طلعت null رغم إنه الكاشير مفعّل، المشكلة
+        // بالواجهة (نسخة JS قديمة ما بترسل pos_register_id) مش بالسيرفر.
+        Log::info('printInvoice: routing decision', [
+            'order_id'                 => $order->id,
+            'branch_id'                => $order->branch_id,
+            'received_printer_id'      => $printerId,
+            'received_pos_register_id' => $posRegisterId,
+            'resolved_queue'           => $queue,
+        ]);
+
+        PrintInvoiceJob::dispatch(
             $order,
             $printerId ? (int) $printerId : null,
             auth()->id(),
             $mode,
-        );
+            $posRegisterId ? (int) $posRegisterId : null,
+        )->onQueue($queue);
 
         return $this->success('تم إرسال أمر طباعة الفاتورة');
     }

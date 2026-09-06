@@ -4,6 +4,7 @@ namespace App\Services\Printing\Renderers;
 
 use App\Models\Order;
 use Spatie\Browsershot\Browsershot;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 
 /**
@@ -137,38 +138,13 @@ class ReceiptImageBuilder
         $targetWidth = (int) config('printing.dots_per_line', 576);
 
         try {
-            $browsershot = Browsershot::html($html)
-                ->windowSize(550, 850)
-                ->deviceScaleFactor(1)
-                ->noSandbox();
+            $renderedVia = $this->renderViaServer($html, $rawPath)
+                ? 'render-server'
+                : ($this->renderViaBrowsershot($html, $rawPath) ? 'browsershot' : null);
 
-            if ($chromePath = config('printing.browsershot_chrome_path')) {
-                $browsershot->setChromePath($chromePath);
+            if ($renderedVia === null) {
+                throw new \RuntimeException('فشل رندر الإيصال عبر render-server وBrowsershot معاً.');
             }
-            if ($nodePath = config('printing.browsershot_node_path')) {
-                $browsershot->setNodePath($nodePath);
-            }
-            if ($npmPath = config('printing.browsershot_npm_path')) {
-                $browsershot->setNpmPath($npmPath);
-            }
-
-            $puppeteerDir = base_path('node_modules/puppeteer');
-            if (is_dir($puppeteerDir)) {
-                $browsershot->setNodeModulePath(base_path('node_modules'));
-            }
-
-            $browsershot->addChromiumArguments([
-                'disable-gpu',
-                'disable-dev-shm-usage',
-                'disable-extensions',
-                'disable-background-networking',
-                'disable-sync',
-                'disable-translate',
-                'mute-audio',
-                'no-first-run',
-            ]);
-
-            $browsershot->save($rawPath);
 
             // ── Resize + Crop to content ────────────────────────────────
             // The raw image is ~1100px wide (550×2). We resize to
@@ -183,7 +159,8 @@ class ReceiptImageBuilder
                 $actualPath = $rawPath;
             }
 
-            Log::info('Receipt image rendered via Browsershot', [
+            Log::info('Receipt image rendered', [
+                'via'          => $renderedVia,
                 'path'         => $actualPath,
                 'size'         => file_exists($actualPath) ? filesize($actualPath) : 0,
                 'target_width' => $targetWidth,
@@ -192,12 +169,110 @@ class ReceiptImageBuilder
             return $actualPath;
 
         } catch (\Exception $e) {
-            Log::error('Browsershot rendering failed', [
+            Log::error('Receipt rendering failed', [
                 'error' => $e->getMessage(),
             ]);
             @unlink($rawPath);
             throw $e;
         }
+    }
+
+    /**
+     * Try rendering via the persistent render-server.js (Node/Puppeteer with
+     * a warm Chrome instance — ~100-200ms instead of the 1-2s it takes
+     * Browsershot to cold-launch Chrome on every single receipt).
+     *
+     * Returns false (never throws) on any failure, so the caller can fall
+     * back to Browsershot transparently — printing must never break just
+     * because the render-server isn't running on this machine yet.
+     */
+    private function renderViaServer(string $html, string $rawPath): bool
+    {
+        if (! config('printing.render_server_enabled', true)) {
+            return false;
+        }
+
+        $url = config('printing.render_server_url');
+        if (! $url) {
+            return false;
+        }
+
+        try {
+            $response = Http::connectTimeout((float) config('printing.render_server_connect_timeout', 1))
+                ->timeout((float) config('printing.render_server_timeout', 8))
+                ->post($url, [
+                    'html'              => $html,
+                    'width'             => 550,
+                    'height'            => 850,
+                    'deviceScaleFactor' => 1,
+                ]);
+
+            $contentType = $response->header('Content-Type');
+
+            if (! $response->successful() || $response->body() === '' || ! str_starts_with((string) $contentType, 'image/')) {
+                Log::warning('Render server returned a non-usable response, falling back to Browsershot', [
+                    'status'        => $response->status(),
+                    'content_type'  => $contentType,
+                    'body_length'   => strlen($response->body()),
+                    'body_preview'  => substr($response->body(), 0, 200),
+                    'html_length'   => strlen($html),
+                ]);
+                return false;
+            }
+
+            file_put_contents($rawPath, $response->body());
+
+            return true;
+        } catch (\Throwable $e) {
+            // Connection refused / timeout / render-server not started yet — expected on
+            // machines where the service hasn't been set up. Fall back silently.
+            Log::info('Render server unavailable, falling back to Browsershot', [
+                'error' => $e->getMessage(),
+            ]);
+            return false;
+        }
+    }
+
+    /**
+     * Render via Browsershot — cold-launches a fresh Chrome process per call.
+     * Kept as the reliable fallback when render-server.js isn't running.
+     */
+    private function renderViaBrowsershot(string $html, string $rawPath): bool
+    {
+        $browsershot = Browsershot::html($html)
+            ->windowSize(550, 850)
+            ->deviceScaleFactor(1)
+            ->noSandbox();
+
+        if ($chromePath = config('printing.browsershot_chrome_path')) {
+            $browsershot->setChromePath($chromePath);
+        }
+        if ($nodePath = config('printing.browsershot_node_path')) {
+            $browsershot->setNodePath($nodePath);
+        }
+        if ($npmPath = config('printing.browsershot_npm_path')) {
+            $browsershot->setNpmPath($npmPath);
+        }
+
+        $puppeteerDir = base_path('node_modules/puppeteer');
+        if (is_dir($puppeteerDir)) {
+            $browsershot->setNodeModulePath(base_path('node_modules'));
+        }
+
+        $browsershot->addChromiumArguments([
+            'disable-gpu',
+            'disable-dev-shm-usage',
+            'disable-extensions',
+            'disable-background-networking',
+            'disable-sync',
+            'disable-translate',
+            'mute-audio',
+            'no-first-run',
+        ]);
+
+        $browsershot->save($rawPath);
+
+        return true;
     }
 
     /**
@@ -269,11 +344,13 @@ class ReceiptImageBuilder
             }
         }
 
-        // Add padding (5px) below the last content row.
-        $finalHeight = min($cropRow + 5, $targetHeight);
-
         // ── Step 3: Crop ───────────────────────────────────────────────
-        $finalHeight = $cropRow + 1;
+        // Add padding (5px) below the last content row. If the scan found
+        // no content at all (a genuinely blank render, or a render whose
+        // content sits above where we expect), $cropRow stays at 0 - never
+        // let that collapse the image to a near-zero height, which the
+        // ESC/POS driver correctly refuses to print as "invalid".
+        $finalHeight = min(max($cropRow + 5, 100), $targetHeight);
 
         // Only crop if there's meaningful whitespace to remove (>10 rows).
         if ($targetHeight - $finalHeight > 10) {
@@ -303,6 +380,14 @@ class ReceiptImageBuilder
      */
     private function cleanupOldTempFiles(): void
     {
+        // IMPORTANT: multiple print jobs (queue worker + department tickets
+        // within the same order + concurrent orders) can be rendering at
+        // the same time, each with its own receipt_*.png in flight. This
+        // used to delete EVERY matching file unconditionally on every call,
+        // which could delete another job's file between it being rendered
+        // and it being read for printing - producing a "0 byte" image out
+        // of nowhere with no error at the point it went missing. Only
+        // sweep files old enough that nothing could still be using them.
         $pattern = storage_path('app/receipt_*.png');
         $files = glob($pattern);
 
@@ -310,8 +395,11 @@ class ReceiptImageBuilder
             return;
         }
 
+        $maxAgeSeconds = 120;
+        $now = time();
+
         foreach ($files as $file) {
-            if (file_exists($file)) {
+            if (file_exists($file) && ($now - filemtime($file)) > $maxAgeSeconds) {
                 @unlink($file);
             }
         }

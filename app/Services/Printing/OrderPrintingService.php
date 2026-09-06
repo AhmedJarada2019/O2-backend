@@ -36,6 +36,75 @@ class OrderPrintingService
     }
 
     /**
+     * يحدّد اسم قائمة الانتظار (queue) المناسبة لهاد الطلب، بحيث تُعالَج
+     * *حصريًا* من طرف الـqueue worker الشغّال على نفس جهاز الكاشير الفعلي
+     * (نستخدم PosRegister.id عبر Printer.linked_pos_register_id، يلي أصلاً
+     * بينضبط وقت تفعيل الجهاز عبر PosRegisterController::activate()).
+     *
+     * بدون هاد الفصل، كل محطات الكاشير بتشارك نفس قائمة "default"، وأي
+     * queue worker (على أي جهاز) ممكن ياخد طلب طباعة مش الو أصلاً — فتطبع
+     * فاتورة فرع/محطة على طابعة محطة تانية بالغلط.
+     *
+     * @param  Order  $order         الطلب (نستخدم branch_id لو ما في printer_id ولا posRegisterId).
+     * @param  ?int   $printerId     رقم الطابعة المستهدفة صراحةً، لو محدّد بالطلب.
+     * @param  ?int   $posRegisterId رقم محطة الكاشير الفعلية يلي طلبت الطباعة (posInfo.id
+     *                               بالواجهة) - أدق من التخمين، ولازم يُستخدم كل ما كان متوفر.
+     * @return string                اسم القائمة، أو "default" لو ما قدرنا نحدد محطة معروفة
+     *                               (توافق عكسي مع بيانات قديمة).
+     */
+    public function resolveQueueForOrder(Order $order, ?int $printerId = null, ?int $posRegisterId = null): string
+    {
+        if ($printerId) {
+            $printer = Printer::find($printerId);
+            if ($printer && $printer->linked_pos_register_id) {
+                return 'pos-register-' . $printer->linked_pos_register_id;
+            }
+            return 'default';
+        }
+
+        // بدون printer_id صريح، لازم نثق بهوية المحطة يلي فعليًا طلبت
+        // الطباعة (posRegisterId) بدل ما "نخمّن" أول طابعة كاشير فعّالة
+        // بالفرع - هيك تخمين كان يرجّع دايماً نفس المحطة (الأقدم/أول id)
+        // بغض النظر مين ضغط "طباعة" فعليًا، فطلبات محطة توجّه لقائمة محطة
+        // تانية بالغلط. مؤكد هذا هو سبب طباعة فاتورة POS-012 على طابعة
+        // POS-010.
+        if ($posRegisterId) {
+            return 'pos-register-' . $posRegisterId;
+        }
+
+        $printer = Printer::where('branch_id', $order->branch_id)
+            ->where('type', 'CASHIER')
+            ->where('is_active', true)
+            ->first();
+
+        if ($printer && $printer->linked_pos_register_id) {
+            return 'pos-register-' . $printer->linked_pos_register_id;
+        }
+
+        return 'default';
+    }
+
+    /**
+     * يلاقي طابعة الكاشير الصحيحة لمحطة معينة. لو $posRegisterId معروف،
+     * لازم تكون الطابعة المربوطة بيها بالتحديد - مش أي طابعة كاشير فعّالة
+     * بالفرع. بدون هالتحديد، أي فرع فيه أكتر من محطة كاشير واحدة كان دايماً
+     * يطبع على أول طابعة كاشير موجودة بالفرع (ترتيب id)، بغض النظر مين
+     * فعليًا طلب الطباعة.
+     */
+    private function resolveCashierPrinter(int $branchId, ?int $posRegisterId = null): ?Printer
+    {
+        $query = Printer::where('branch_id', $branchId)
+            ->where('type', 'CASHIER')
+            ->where('is_active', true);
+
+        if ($posRegisterId) {
+            return $query->where('linked_pos_register_id', $posRegisterId)->first();
+        }
+
+        return $query->first();
+    }
+
+    /**
      * الدالة الموحدة لطباعة الطلب.
      *
      * تحدد تلقائياً:
@@ -169,12 +238,9 @@ class OrderPrintingService
     /**
      * طباعة فاتورة كاشير للطابعة الافتراضية.
      */
-    public function printInvoiceToCashier(Order $order): array
+    public function printInvoiceToCashier(Order $order, ?int $posRegisterId = null): array
     {
-        $printer = Printer::where('branch_id', $order->branch_id)
-            ->where('type', 'CASHIER')
-            ->where('is_active', true)
-            ->first();
+        $printer = $this->resolveCashierPrinter($order->branch_id, $posRegisterId);
 
         if (!$printer) {
             return ['success' => false, 'message' => 'لا توجد طابعة كاشير مفعّلة لهذا الفرع'];
@@ -190,25 +256,25 @@ class OrderPrintingService
      * ب. لكل قسم تاني (مطبخ/بار/...) — نفس شكل الفاتورة (invoice.blade.php)
      *    بس مفلترة على أصناف هذا القسم فقط، ترسل لطابعته الخاصة.
      *
-     * @param  string  $mode  'all' = مدمجة + أقسام | 'merged' = المدمجة فقط
-     *                         | 'departments' = نسخ الأقسام كل على طابعته
-     *                         | 'fawri' = فاتورة منفصلة لكل قسم، كلها على طابعة الكاشير
+     * @param  string  $mode          'all' = مدمجة + أقسام | 'merged' = المدمجة فقط
+     *                                 | 'departments' = نسخ الأقسام كل على طابعته
+     *                                 | 'fawri' = فاتورة منفصلة لكل قسم، كلها على طابعة الكاشير
+     * @param  ?int    $posRegisterId محطة الكاشير الفعلية يلي طلبت الطباعة - لازم
+     *                                نطبع على طابعتها بالتحديد، مش أي طابعة كاشير
+     *                                فعّالة بالفرع (راجع resolveCashierPrinter()).
      */
-    public function printLocal(Order $order, string $mode = 'all'): array
+    public function printLocal(Order $order, string $mode = 'all', ?int $posRegisterId = null): array
     {
         // وضع "فوري": كل قسم بفاتورة مستقلة، لكن الكل يطبع على طابعة الكاشير.
         if ($mode === 'fawri') {
-            return $this->printDepartmentInvoicesOnCashier($order);
+            return $this->printDepartmentInvoicesOnCashier($order, $posRegisterId);
         }
 
         $results = [];
 
         // أ. فاتورة الكاشير المدمجة (كل الأصناف، بدون تقسيم أقسام)
         if ($mode === 'all' || $mode === 'merged') {
-            $cashierPrinter = Printer::where('branch_id', $order->branch_id)
-                ->where('type', 'CASHIER')
-                ->where('is_active', true)
-                ->first();
+            $cashierPrinter = $this->resolveCashierPrinter($order->branch_id, $posRegisterId);
 
             if ($cashierPrinter) {
                 $results[] = array_merge($this->printInvoice($order, $cashierPrinter), [
@@ -237,12 +303,9 @@ class OrderPrintingService
      * وضع "فوري" — فاتورة منفصلة لكل قسم في الطلب (مفلترة على أصناف القسم)،
      * لكن كلها تُطبع على طابعة الكاشير الوحيدة. ما في توجيه لطابعات أقسام.
      */
-    private function printDepartmentInvoicesOnCashier(Order $order): array
+    private function printDepartmentInvoicesOnCashier(Order $order, ?int $posRegisterId = null): array
     {
-        $cashierPrinter = Printer::where('branch_id', $order->branch_id)
-            ->where('type', 'CASHIER')
-            ->where('is_active', true)
-            ->first();
+        $cashierPrinter = $this->resolveCashierPrinter($order->branch_id, $posRegisterId);
 
         if (!$cashierPrinter) {
             return [[
