@@ -326,23 +326,40 @@ class OrderPrintingService
             ];
         }
 
-        $results = [];
+        // نرندر كل تذاكر الأقسام أول (هيك بيضل تسلسلي عبر render-server عن
+        // قصد - Puppeteer ما بتتحمل رندرات متزامنة بشكل مستقر)، وبعدين
+        // نطبعهم كلهم بنفس اتصال الطابعة الواحد بدل فتح/قفل اتصال منفصل
+        // لكل قسم. الاتصال المنفصل لكل تذكرة كان عبء حقيقي (TCP handshake +
+        // تهيئة السائق) يتكرر بلا داعي رغم إنهم كلهم رايحين لنفس الطابعة
+        // بالضبط - جزء ملموس من وقت الطباعة الكلي لطلب "فوري" متعدد الأقسام.
+        $imagePaths = [];
+        $labels = [];
+        $itemCounts = [];
         foreach ($groups as $group) {
-            $imagePath = $this->receiptRenderer->renderFilteredInvoice(
+            $imagePaths[] = $this->receiptRenderer->renderFilteredInvoice(
                 $order,
                 $group['label'],
                 $group['items']
             );
-            $result = $this->printerService->printReceiptImage($cashierPrinter, $imagePath);
-            $this->receiptRenderer->cleanup($imagePath);
+            $labels[] = $group['label'];
+            $itemCounts[] = count($group['items']);
+        }
 
+        $printResults = $this->printerService->printMultipleReceiptImages($cashierPrinter, $imagePaths);
+
+        $results = [];
+        foreach ($printResults as $i => $result) {
             $results[] = array_merge($result, [
                 'printer_id'   => $cashierPrinter->id,
                 'printer_name' => $cashierPrinter->name,
                 'printer_type' => 'CASHIER',
-                'department'   => $group['label'],
-                'items_count'  => count($group['items']),
+                'department'   => $labels[$i] ?? null,
+                'items_count'  => $itemCounts[$i] ?? 0,
             ]);
+        }
+
+        foreach ($imagePaths as $imagePath) {
+            $this->receiptRenderer->cleanup($imagePath);
         }
 
         return $results;

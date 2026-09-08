@@ -23,6 +23,16 @@ interface PrinterDriverInterface
     public function printReceiptImage(Printer $printer, string $imagePath): array;
 
     /**
+     * Print several receipt images to the same printer over a single
+     * connection (one connect/close instead of one per image) — used when
+     * an order needs multiple separate receipts on one printer (e.g.
+     * "fawri" mode's one-ticket-per-department, all on the cashier
+     * printer). Returns one result array per input image, in order; a
+     * failure on one image does not stop the rest from printing.
+     */
+    public function printMultipleReceiptImages(Printer $printer, array $imagePaths): array;
+
+    /**
      * Print an image file to the printer (no cut).
      */
     public function printImage(Printer $printer, string $imagePath): array;

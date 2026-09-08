@@ -116,6 +116,65 @@ class EscPosPrinterDriver implements PrinterDriverInterface
     }
 
     /**
+     * Print several receipt images to the same printer over one connection.
+     * "fawri" mode prints a separate ticket per department but all of them
+     * land on the same cashier printer - opening/closing a fresh connection
+     * per ticket was paying a full TCP handshake + driver init for every
+     * single one even though nothing about the destination changed between
+     * them. One connection, N images each still individually fed+cut as
+     * their own physical receipt.
+     */
+    public function printMultipleReceiptImages(Printer $printer, array $imagePaths): array
+    {
+        $escpos = null;
+        $results = [];
+
+        try {
+            $escpos = $this->connect($printer);
+
+            foreach ($imagePaths as $imagePath) {
+                try {
+                    // نفس فحص getimagesize() المستخدم بـprintReceiptImage() —
+                    // راجع التعليق هناك لتفاصيل ليش مش $img->getWidth().
+                    $dimensions = @getimagesize($imagePath);
+
+                    if (! $dimensions || $dimensions[0] <= 0 || $dimensions[1] <= 0) {
+                        throw new \RuntimeException(
+                            'Rendered receipt image is invalid (width=' . ($dimensions[0] ?? 0)
+                                . ', height=' . ($dimensions[1] ?? 0) . ') — refusing to print a blank page.'
+                        );
+                    }
+
+                    $img = EscposImage::load($imagePath);
+                    $escpos->bitImage($img);
+                    $escpos->feed(4);
+                    $escpos->cut();
+
+                    $results[] = $this->success($printer);
+                } catch (\Exception $e) {
+                    // صورة وحدة فاسدة ما لازم توقف باقي التذاكر بنفس الاتصال.
+                    Log::error('ESC/POS bitImage failed (batch)', [
+                        'printer'    => $printer->name,
+                        'path'       => $imagePath,
+                        'error'      => $e->getMessage(),
+                        'error_type' => get_class($e),
+                    ]);
+                    $results[] = $this->error($printer, $e);
+                }
+            }
+        } catch (\Exception $e) {
+            // فشل الاتصال نفسه (مش صورة محددة) - كل الصور بهالدفعة فشلت.
+            foreach ($imagePaths as $imagePath) {
+                $results[] = $this->error($printer, $e);
+            }
+        } finally {
+            $this->close($escpos);
+        }
+
+        return $results;
+    }
+
+    /**
      * Print an image (standalone, no cut).
      */
     public function printImage(Printer $printer, string $imagePath): array
