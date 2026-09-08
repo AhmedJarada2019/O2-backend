@@ -64,44 +64,37 @@ class OrderPrintingService
 
         // بدون printer_id صريح، لازم نثق بهوية المحطة يلي فعليًا طلبت
         // الطباعة (posRegisterId) بدل ما "نخمّن" أول طابعة كاشير فعّالة
-        // بالفرع - هيك تخمين كان يرجّع دايماً نفس المحطة (الأقدم/أول id)
-        // بغض النظر مين ضغط "طباعة" فعليًا، فطلبات محطة توجّه لقائمة محطة
-        // تانية بالغلط. مؤكد هذا هو سبب طباعة فاتورة POS-012 على طابعة
-        // POS-010.
+        // بالفرع - هيك تخمين كان يرجّع محطة عشوائية مختلفة بكل مرة بمجرد
+        // ما يصير أكتر من طابعة كاشير فعّالة بالفرع (مؤكد فعليًا: طلبات
+        // من واجهة الإدارة /admin/pos - بدون جهاز مفعّل حقيقي فمافي
+        // posRegisterId - كانت توجّه لمحطات 2، 4، 5، 6، 15، 16 بالتناوب
+        // بنفس اليوم). لا تعيد هذا الـfallback - أي مستدعي بدون هوية
+        // محطة معروفة لازم يرجعله "default" ويفشل بوضوح، مش يخمّن.
         if ($posRegisterId) {
             return 'pos-register-' . $posRegisterId;
-        }
-
-        $printer = Printer::where('branch_id', $order->branch_id)
-            ->where('type', 'CASHIER')
-            ->where('is_active', true)
-            ->first();
-
-        if ($printer && $printer->linked_pos_register_id) {
-            return 'pos-register-' . $printer->linked_pos_register_id;
         }
 
         return 'default';
     }
 
     /**
-     * يلاقي طابعة الكاشير الصحيحة لمحطة معينة. لو $posRegisterId معروف،
-     * لازم تكون الطابعة المربوطة بيها بالتحديد - مش أي طابعة كاشير فعّالة
-     * بالفرع. بدون هالتحديد، أي فرع فيه أكتر من محطة كاشير واحدة كان دايماً
-     * يطبع على أول طابعة كاشير موجودة بالفرع (ترتيب id)، بغض النظر مين
-     * فعليًا طلب الطباعة.
+     * يلاقي طابعة الكاشير الصحيحة لمحطة معينة. لازم $posRegisterId يكون
+     * معروف - بدونه بترجع null صراحة، مش "أي طابعة كاشير فعّالة بالفرع".
+     * أي فرع فيه أكتر من محطة كاشير واحدة (الحالة الطبيعية الآن)، تخمين
+     * "أول طابعة" كان يرجّع نتيجة مختلفة عشوائيًا كل مرة ويطبع فاتورة
+     * حقيقية على محطة غلط - ثبت هذا فعليًا (راجع resolveQueueForOrder()).
      */
     private function resolveCashierPrinter(int $branchId, ?int $posRegisterId = null): ?Printer
     {
-        $query = Printer::where('branch_id', $branchId)
-            ->where('type', 'CASHIER')
-            ->where('is_active', true);
-
-        if ($posRegisterId) {
-            return $query->where('linked_pos_register_id', $posRegisterId)->first();
+        if (!$posRegisterId) {
+            return null;
         }
 
-        return $query->first();
+        return Printer::where('branch_id', $branchId)
+            ->where('type', 'CASHIER')
+            ->where('is_active', true)
+            ->where('linked_pos_register_id', $posRegisterId)
+            ->first();
     }
 
     /**
