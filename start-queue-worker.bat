@@ -30,9 +30,13 @@ if defined POS_REGISTER_ID (
     set QUEUE_NAME=default
 )
 
+REM --sleep=0.25: الـworker بيفحص جدول jobs كل 0.25 ثانية لما يكون فاضي
+REM (بدل 1 ثانية الافتراضية) — أسرع رد فعل لأمر طباعة جديد، بدون حمل
+REM إضافي يُذكر (استعلام DB خفيف على جدول صغير). Laravel Worker::sleep()
+REM بيدعم كسور الثانية فعليًا (usleep داخليًا)، مش مجرد رقم صحيح.
 :loop
 echo [%date% %time%] starting queue worker (queue: %QUEUE_NAME%)...
-php artisan queue:work database --queue=%QUEUE_NAME% --tries=2 --timeout=120 --sleep=1 --max-time=3600
+php artisan queue:work database --queue=%QUEUE_NAME% --tries=2 --timeout=120 --sleep=0.25 --max-time=3600
 echo [%date% %time%] worker exited, restarting in 3s...
 timeout /t 3 /nobreak >nul
 goto loop
