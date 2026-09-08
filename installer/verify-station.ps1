@@ -84,6 +84,12 @@ $results = @(
 
     Test-Signature -Name "render-server.js (fullPage:false screenshot fix)" `
         -RelativePath "render-server.js" -MustContain "fullPage: false"
+
+    Test-Signature -Name "start-queue-worker.bat (fast queue poll interval)" `
+        -RelativePath "start-queue-worker.bat" -MustContain "--sleep=0.25"
+
+    Test-Signature -Name "EscPosPrinterDriver.php (batched printer connection)" `
+        -RelativePath "app\Services\Printing\Drivers\EscPosPrinterDriver.php" -MustContain "printMultipleReceiptImages"
 )
 
 $failCount = ($results | Where-Object { $_ -eq $false }).Count
