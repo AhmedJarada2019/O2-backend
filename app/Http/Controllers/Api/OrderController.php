@@ -985,6 +985,12 @@ class OrderController extends ApiController
         // الكاشير بدون جهاز مفعّل حقيقي): التخمين كان يوجّه فواتير حقيقية
         // لمحطات عشوائية مختلفة كل مرة بدل ما يفشل بوضوح.
         if (!$printerId && !$posRegisterId) {
+            Log::warning('printInvoice: rejected - no printer_id or pos_register_id', [
+                'order_id'    => $order->id,
+                'all_input'   => request()->all(),
+                'device_uuid' => request()->header('X-Device-UUID'),
+                'user_id'     => auth()->id(),
+            ]);
             $lock->release();
             return response()->json([
                 'success' => false,

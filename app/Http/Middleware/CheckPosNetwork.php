@@ -78,14 +78,26 @@ class CheckPosNetwork
         }
 
         // ── 6. فحص الشبكة (Static IP) ───────────────────────────
+        // الشبكة الفعلية هون مضبوطة بقناع /23 (255.255.254.0) - مؤكد من
+        // إعدادات الشبكة نفسها (السيرفر المركزي عنوانه 192.168.2.250/23،
+        // يغطي المدى الكامل 192.168.2.0–192.168.3.255 كشبكة فيزيائية
+        // واحدة). المقارنة القديمة (أول 3 أرقام بس، يعني /24) كانت ترفض
+        // بالغلط أي جهاز واقع بالنص التاني من نفس الشبكة الحقيقية - مؤكد
+        // فعليًا: جهاز POS-012 بعنوان 192.168.2.42 انحظر لأنه عنوان الفرع
+        // المرجعي كان 192.168.3.30، رغم إنهم فعليًا بنفس الشبكة.
         if ($branch?->static_ip) {
             $clientIp = $request->ip();
             $branchIp = $branch->static_ip;
 
-            $clientNetwork = implode('.', array_slice(explode('.', $clientIp), 0, 3));
-            $branchNetwork = implode('.', array_slice(explode('.', $branchIp), 0, 3));
+            $mask = ip2long('255.255.254.0');
+            $clientLong = ip2long($clientIp);
+            $branchLong = ip2long($branchIp);
 
-            if ($clientNetwork !== $branchNetwork) {
+            $sameNetwork = $clientLong !== false
+                && $branchLong !== false
+                && ($clientLong & $mask) === ($branchLong & $mask);
+
+            if (!$sameNetwork) {
                 return response()->json([
                     'success' => false,
                     'message' => 'عذراً، تم حظر الطلب! لا يمكن استخدام نقطة البيع من خارج شبكة الفرع الرسمية.',
