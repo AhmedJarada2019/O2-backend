@@ -22,7 +22,6 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Cache;
-use Illuminate\Support\Facades\Log;
 use App\Services\Accounting\TransactionPostingService;
 use App\Jobs\PrintInvoiceJob;
 use App\Jobs\PrintTicketsJob;
@@ -92,8 +91,6 @@ class OrderController extends ApiController
                 'status' => 'pending',
                 'table_number' => $data['table_number'] ?? null,
                 'customer_name' => $data['customer_name'] ?? null,
-                'customer_phone' => $data['customer_phone'] ?? null,
-                'customer_mobile' => $data['customer_mobile'] ?? null,
                 'customer_address' => $data['customer_address'] ?? null,
                 'customer_notes' => $data['customer_notes'] ?? null,
                 'scheduled_at' => $data['scheduled_at'] ?? null,
@@ -985,7 +982,7 @@ class OrderController extends ApiController
         // الكاشير بدون جهاز مفعّل حقيقي): التخمين كان يوجّه فواتير حقيقية
         // لمحطات عشوائية مختلفة كل مرة بدل ما يفشل بوضوح.
         if (!$printerId && !$posRegisterId) {
-            Log::warning('printInvoice: rejected - no printer_id or pos_register_id', [
+            \Log::warning('printInvoice: rejected - no printer_id or pos_register_id', [
                 'order_id'    => $order->id,
                 'all_input'   => request()->all(),
                 'device_uuid' => request()->header('X-Device-UUID'),
@@ -1024,7 +1021,7 @@ class OrderController extends ApiController
         // لو صارت فاتورة محطة تطبع على طابعة محطة تانية بالغلط: لو
         // received_pos_register_id طلعت null رغم إنه الكاشير مفعّل، المشكلة
         // بالواجهة (نسخة JS قديمة ما بترسل pos_register_id) مش بالسيرفر.
-        Log::info('printInvoice: routing decision', [
+        \Log::info('printInvoice: routing decision', [
             'order_id'                 => $order->id,
             'branch_id'                => $order->branch_id,
             'received_printer_id'      => $printerId,

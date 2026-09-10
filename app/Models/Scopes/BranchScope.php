@@ -12,7 +12,7 @@ class BranchScope implements Scope
 {
     public function apply(Builder $builder, Model $model): void
     {
-        $user = Auth::user();
+        static $lock = false; if ($lock) { return; } $lock = true; $user = Auth::user(); $lock = false;
 
         // لا نطبق الفلترة إذا:
         // 1. لا يوجد مستخدم مسجل دخول

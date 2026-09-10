@@ -55,8 +55,6 @@ class Order extends Model
         'customer_count',
         'seated_at',
         'customer_name',
-        'customer_phone',
-        'customer_mobile',
         'customer_id',
         'customer_address_id',
         'customer_address',

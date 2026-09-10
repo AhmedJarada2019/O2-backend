@@ -34,12 +34,16 @@ class ReceiptImageBuilder
     /**
      * Render a filtered invoice receipt — only specific items for a cashier printer.
      *
-     * @param  Order  $order       The order model.
-     * @param  string $printerName Name of the destination printer.
-     * @param  array  $items       Filtered items: ['item_id','name','quantity','price','total','notes']
-     * @return string              Absolute path to the generated PNG image.
+     * @param  Order  $order           The order model.
+     * @param  string $printerName     Name of the destination printer.
+     * @param  array  $items           Filtered items: ['item_id','name','quantity','price','total','notes']
+     * @param  bool   $showOrderTotals إظهار الخصم والمجموع الكلي الحقيقي للطلب (مش بس مجموع
+     *                                 هالنسخة المفلترة) — تُستخدم لآخر نسخة بوضع "فوري" لأنها
+     *                                 كلها فاتورة الزبون نفسها منقسمة لأقسام على نفس الطابعة،
+     *                                 مش تذاكر أقسام منفصلة فعلياً زي وضع "محلي".
+     * @return string                  Absolute path to the generated PNG image.
      */
-    public function buildFilteredInvoiceReceipt(Order $order, string $printerName, array $items): string
+    public function buildFilteredInvoiceReceipt(Order $order, string $printerName, array $items, bool $showOrderTotals = false): string
     {
         // Convert items to objects so the Blade template can use -> property access
         $filteredItems = array_map(function ($item) {
@@ -61,10 +65,11 @@ class ReceiptImageBuilder
         $filteredTotal = array_sum(array_map(fn($i) => $i->total, $filteredItems));
 
         $viewData = [
-            'order'          => $order,
-            'filteredItems'  => $filteredItems,
-            'filteredTotal'  => $filteredTotal,
-            'printerName'    => $printerName,
+            'order'            => $order,
+            'filteredItems'    => $filteredItems,
+            'filteredTotal'    => $filteredTotal,
+            'printerName'      => $printerName,
+            'showOrderTotals'  => $showOrderTotals,
         ];
 
         $html = view('receipts.invoice', $viewData)->render();
@@ -344,13 +349,11 @@ class ReceiptImageBuilder
             }
         }
 
+        // Add padding (5px) below the last content row.
+        $finalHeight = min($cropRow + 5, $targetHeight);
+
         // ── Step 3: Crop ───────────────────────────────────────────────
-        // Add padding (5px) below the last content row. If the scan found
-        // no content at all (a genuinely blank render, or a render whose
-        // content sits above where we expect), $cropRow stays at 0 - never
-        // let that collapse the image to a near-zero height, which the
-        // ESC/POS driver correctly refuses to print as "invalid".
-        $finalHeight = min(max($cropRow + 5, 100), $targetHeight);
+        $finalHeight = $cropRow + 1;
 
         // Only crop if there's meaningful whitespace to remove (>10 rows).
         if ($targetHeight - $finalHeight > 10) {
@@ -380,14 +383,6 @@ class ReceiptImageBuilder
      */
     private function cleanupOldTempFiles(): void
     {
-        // IMPORTANT: multiple print jobs (queue worker + department tickets
-        // within the same order + concurrent orders) can be rendering at
-        // the same time, each with its own receipt_*.png in flight. This
-        // used to delete EVERY matching file unconditionally on every call,
-        // which could delete another job's file between it being rendered
-        // and it being read for printing - producing a "0 byte" image out
-        // of nowhere with no error at the point it went missing. Only
-        // sweep files old enough that nothing could still be using them.
         $pattern = storage_path('app/receipt_*.png');
         $files = glob($pattern);
 
@@ -395,11 +390,8 @@ class ReceiptImageBuilder
             return;
         }
 
-        $maxAgeSeconds = 120;
-        $now = time();
-
         foreach ($files as $file) {
-            if (file_exists($file) && ($now - filemtime($file)) > $maxAgeSeconds) {
+            if (file_exists($file)) {
                 @unlink($file);
             }
         }

@@ -16,6 +16,15 @@
     one hiding behind the last, so it took 5 rounds of debugging to find
     them all one at a time instead of catching it in one shot up front.
 
+    Also checks the station's .env for the config-side version of the same
+    problem - on 2026-09-10, POS-015 (station code, PosRegister id 19) had a
+    completely blank/default .env: no POS_REGISTER_ID, no POS_REGISTER_CODE,
+    and a wrong DB_PASSWORD. The queue worker silently produced a garbage
+    queue name ("pos-register-"=,default") and could never reach the
+    database, so print jobs queued up forever with nobody consuming them and
+    the cashier only found out when paper never came out. A code-only check
+    would never have caught this - the code was fine, the config wasn't.
+
     Run this against any station - right after provisioning a new one, or
     at any time against an existing one you're unsure about - to catch that
     class of problem immediately instead of hours into a live debugging
@@ -26,7 +35,15 @@
 #>
 
 param(
-    [string]$InstallDir = "C:\Program Files\O2System\backend"
+    [string]$InstallDir = "C:\Program Files\O2System\backend",
+
+    # Pass this when checking the installer's own bundle\app template folder
+    # (via refresh-bundle.ps1) instead of a real, provisioned station. The
+    # template intentionally has no .env yet - provision.ps1 writes one fresh
+    # per physical machine, including POS_REGISTER_ID from a mandatory
+    # activation step. Running the .env/DB checks against the template would
+    # always fail there and isn't a real problem, so skip them in that case.
+    [switch]$SkipRuntimeChecks
 )
 
 function Test-Signature {
@@ -60,6 +77,73 @@ function Test-Signature {
     return $true
 }
 
+function Test-EnvKeyPresent {
+    param(
+        [string]$Name,
+        [string]$Key
+    )
+
+    $envPath = Join-Path $InstallDir ".env"
+
+    if (-not (Test-Path $envPath)) {
+        Write-Host "  [FAIL] $Name - .env not found at $envPath" -ForegroundColor Red
+        return $false
+    }
+
+    $line = Get-Content $envPath | Where-Object { $_ -match "^$Key=" } | Select-Object -First 1
+
+    if (-not $line) {
+        Write-Host "  [FAIL] $Name - $Key is missing from .env entirely (station was never provisioned for a specific PosRegister)" -ForegroundColor Red
+        return $false
+    }
+
+    $value = ($line -split '=', 2)[1]
+    $value = $value.Trim().Trim('"')
+
+    if ([string]::IsNullOrWhiteSpace($value)) {
+        Write-Host "  [FAIL] $Name - $Key is present in .env but empty" -ForegroundColor Red
+        return $false
+    }
+
+    Write-Host "  [OK]   $Name ($Key=$value)" -ForegroundColor Green
+    return $true
+}
+
+function Test-DatabaseConnection {
+    param(
+        [string]$Name
+    )
+
+    $envPath = Join-Path $InstallDir ".env"
+    if (-not (Test-Path $envPath)) {
+        Write-Host "  [FAIL] $Name - .env not found, cannot test connection" -ForegroundColor Red
+        return $false
+    }
+
+    Push-Location $InstallDir
+    try {
+        $output = & php artisan migrate:status 2>&1 | Out-String
+        $ok = ($LASTEXITCODE -eq 0) -and ($output -notmatch "Access denied|SQLSTATE|could not find driver|Connection refused|getaddrinfo")
+
+        if (-not $ok) {
+            Write-Host "  [FAIL] $Name - database connection failed (wrong DB_PASSWORD/DB_HOST in .env, or DB unreachable):" -ForegroundColor Red
+            $firstLine = ($output -split "`r?`n" | Where-Object { $_.Trim() -ne "" } | Select-Object -First 1)
+            if ($firstLine) {
+                Write-Host "         $firstLine" -ForegroundColor Red
+            }
+            return $false
+        }
+
+        Write-Host "  [OK]   $Name" -ForegroundColor Green
+        return $true
+    } catch {
+        Write-Host "  [FAIL] $Name - could not run php artisan (php not on PATH?): $($_.Exception.Message)" -ForegroundColor Red
+        return $false
+    } finally {
+        Pop-Location
+    }
+}
+
 Write-Host "Checking station at: $InstallDir" -ForegroundColor Cyan
 Write-Host ""
 
@@ -90,7 +174,22 @@ $results = @(
 
     Test-Signature -Name "EscPosPrinterDriver.php (batched printer connection)" `
         -RelativePath "app\Services\Printing\Drivers\EscPosPrinterDriver.php" -MustContain "printMultipleReceiptImages"
+
+    Test-Signature -Name "render-server.js (no networkidle0 stall on setContent)" `
+        -RelativePath "render-server.js" -MustContain "waitUntil: 'load'" -MustNotContain "networkidle0"
 )
+
+if (-not $SkipRuntimeChecks) {
+    $results += Test-EnvKeyPresent -Name ".env has POS_REGISTER_ID (station identity for print routing)" `
+        -Key "POS_REGISTER_ID"
+
+    $results += Test-EnvKeyPresent -Name ".env has POS_REGISTER_CODE (station identity, human-readable)" `
+        -Key "POS_REGISTER_CODE"
+
+    $results += Test-DatabaseConnection -Name "Database connection actually works (DB_PASSWORD etc. correct)"
+} else {
+    Write-Host "  [SKIP] .env / database checks (bundle template - provision.ps1 writes .env per-machine)" -ForegroundColor DarkGray
+}
 
 $failCount = ($results | Where-Object { $_ -eq $false }).Count
 

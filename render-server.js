@@ -139,7 +139,14 @@ async function renderHtml(html, width, height, deviceScaleFactor) {
             height: height || 850,
             deviceScaleFactor: deviceScaleFactor || 1,
         });
-        await page.setContent(html, { waitUntil: ['load', 'networkidle0'] });
+        // 'networkidle0' measured at ~2000ms per render on POS-012 even
+        // though these receipts are 100% inline HTML/CSS with zero external
+        // requests (no @font-face, no <img src=http>, no <link>) — it's
+        // waiting out network-idle detection for a page that never had any
+        // network activity to begin with. 'load' is enough for inline
+        // content; the explicit document.fonts.ready wait right below still
+        // covers any font-readiness concern.
+        await page.setContent(html, { waitUntil: 'load' });
         // Local @font-face (Arabic Tahoma) can finish loading slightly after
         // the 'load' event fires — screenshotting too early produces a
         // blank/near-empty PNG. Wait for fonts explicitly (with a safety
@@ -177,7 +184,6 @@ async function renderHtml(html, width, height, deviceScaleFactor) {
             height: measuredHeight,
             deviceScaleFactor: deviceScaleFactor || 1,
         });
-
         const png = await page.screenshot({ type: 'png', fullPage: false });
 
         // A receipt should always be at least a few KB (logo/header/border

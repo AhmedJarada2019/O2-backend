@@ -332,14 +332,21 @@ class OrderPrintingService
         // لكل قسم. الاتصال المنفصل لكل تذكرة كان عبء حقيقي (TCP handshake +
         // تهيئة السائق) يتكرر بلا داعي رغم إنهم كلهم رايحين لنفس الطابعة
         // بالضبط - جزء ملموس من وقت الطباعة الكلي لطلب "فوري" متعدد الأقسام.
+        //
+        // كل نسخ "فوري" بتطبع على نفس طابعة الكاشير وهي فعلياً فاتورة الزبون
+        // نفسها (مقسّمة بالعرض بس لسهولة القراءة) — مش تذاكر أقسام منفصلة زي
+        // وضع "محلي". نظهر الخصم والمجموع الكلي الحقيقي على آخر نسخة فقط،
+        // متل "تابع" بآخر صفحة من فاتورة متعددة الصفحات.
         $imagePaths = [];
         $labels = [];
         $itemCounts = [];
-        foreach ($groups as $group) {
+        $lastKey = array_key_last($groups);
+        foreach ($groups as $key => $group) {
             $imagePaths[] = $this->receiptRenderer->renderFilteredInvoice(
                 $order,
                 $group['label'],
-                $group['items']
+                $group['items'],
+                $key === $lastKey
             );
             $labels[] = $group['label'];
             $itemCounts[] = count($group['items']);

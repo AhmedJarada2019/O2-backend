@@ -174,6 +174,10 @@ Route::middleware('auth:sanctum')->group(function () {
             // ── فتح صندوق النقدية (F9) ──
             Route::post('pos/open-drawer', [\App\Http\Controllers\Api\CashDrawerController::class, 'open']);
 
+            // ── حركات الصندوق (مصروفات/سحوبات/إيداعات) — لوحة المعلومات وسجل اليومية ──
+            Route::get('financial-transactions', [\App\Http\Controllers\Api\FinancialTransactionController::class, 'index']);
+            Route::post('financial-transactions', [\App\Http\Controllers\Api\FinancialTransactionController::class, 'store']);
+
             // ── التنقل بين الفواتير (التالي/السابق/الأول/الأخير) ──
             Route::get('invoices/{invoice}/adjacent', [InvoiceController::class, 'adjacent']);
         });

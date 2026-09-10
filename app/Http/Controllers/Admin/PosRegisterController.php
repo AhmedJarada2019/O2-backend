@@ -131,14 +131,23 @@ class PosRegisterController extends Controller
             ], 403);
         }
 
-        // فحص الشبكة أيضاً
+        // فحص الشبكة أيضاً — نفس منطق CheckPosNetwork middleware بالضبط
+        // (مقارنة أول 3 octets بس كانت بتفترض شبكة /24، بس شبكة الفرع فعليًا
+        // /23 - كانت ترفض محطات حقيقية داخل نفس الفرع بالغلط). راجع
+        // CheckPosNetwork.php للتفاصيل الكاملة عن الحادثة.
         if ($register->branch?->static_ip) {
             $clientIp = $request->ip();
             $branchIp = $register->branch->static_ip;
-            $clientNetwork = implode('.', array_slice(explode('.', $clientIp), 0, 3));
-            $branchNetwork = implode('.', array_slice(explode('.', $branchIp), 0, 3));
 
-            if ($clientNetwork !== $branchNetwork) {
+            $mask = ip2long('255.255.254.0');
+            $clientLong = ip2long($clientIp);
+            $branchLong = ip2long($branchIp);
+
+            $sameNetwork = $clientLong !== false
+                && $branchLong !== false
+                && ($clientLong & $mask) === ($branchLong & $mask);
+
+            if (!$sameNetwork) {
                 return response()->json([
                     'success' => false,
                     'message' => 'الجهاز خارج شبكة الفرع!',

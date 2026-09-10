@@ -51,9 +51,17 @@ param(
     # this specific device to one PosRegister row and gives back its ID,
     # which we then use to scope this station's queue worker to ONLY the
     # print jobs meant for it (see OrderPrintingService::resolveQueueForOrder()).
-    # Leave empty to skip activation - the queue worker then falls back to
-    # the shared "default" queue, same as before this feature existed.
-    [string]$ActivationToken = "",
+    #
+    # MANDATORY (2026-09-10) - this used to be optional with a "queue worker
+    # falls back to shared 'default' queue, printing still works" warning.
+    # That is no longer true: printInvoice() now REJECTS (422) any print
+    # request with neither printer_id nor pos_register_id instead of
+    # guessing a printer, so a station provisioned without activation has
+    # BROKEN printing, not just "no isolation" - exactly what happened to
+    # POS-015 on 2026-09-10 (installed with no token, .env never got
+    # POS_REGISTER_ID, queue worker never processed anything, nobody
+    # noticed until a cashier complained paper never came out).
+    [Parameter(Mandatory = $true)] [string]$ActivationToken,
     [string]$AppUrl = "http://192.168.2.250:8095"
 )
 
@@ -220,35 +228,36 @@ try {
     & $phpExe artisan config:clear 2>&1 | Out-Null
     $ErrorActionPreference = $prevEap2
 
-    # -- Activate this station's PosRegister (optional) ------------------
+    # -- Activate this station's PosRegister (mandatory) -----------------
     # Binds this specific device to one PosRegister row in the central DB
     # and gets back its ID, which scopes this station's queue worker so it
     # ONLY picks up print jobs meant for it - never another station's.
     # See OrderPrintingService::resolveQueueForOrder() for the other half.
-    if ($ActivationToken -ne "") {
-        Write-Step "Activating this station (PosRegister)..."
-        try {
-            $activateUrl = "$AppUrl/api/pos/activate"
-            $body = @{ token = $ActivationToken } | ConvertTo-Json
-            $response = Invoke-RestMethod -Uri $activateUrl -Method Post -Body $body -ContentType "application/json" -TimeoutSec 15
+    #
+    # This MUST succeed or the install aborts (throw) - a station left
+    # without POS_REGISTER_ID in .env has broken printing, not degraded
+    # printing (see the note on -ActivationToken above for why). Silently
+    # continuing here is exactly how POS-015 shipped broken on 2026-09-10.
+    Write-Step "Activating this station (PosRegister)..."
+    try {
+        $activateUrl = "$AppUrl/api/pos/activate"
+        $body = @{ token = $ActivationToken } | ConvertTo-Json
+        $response = Invoke-RestMethod -Uri $activateUrl -Method Post -Body $body -ContentType "application/json" -TimeoutSec 15
 
-            if ($response.success) {
-                $posRegisterId = $response.pos_info.id
-                $posRegisterCode = $response.pos_info.code
-                Set-EnvValue $envPath "POS_REGISTER_ID" $posRegisterId
-                Set-EnvValue $envPath "POS_REGISTER_CODE" $posRegisterCode
-                $script:posRegisterQueueName = "pos-register-$posRegisterId,default"
-                Write-Ok "Station activated as $posRegisterCode (id=$posRegisterId)"
-            } else {
-                Write-Warn2 "Activation failed: $($response.message)"
-                Write-Warn2 "Queue worker will use the shared 'default' queue - printing still works, just without station isolation."
-            }
-        } catch {
-            Write-Warn2 "Could not reach activation endpoint (${activateUrl}): $($_.Exception.Message)"
-            Write-Warn2 "Queue worker will use the shared 'default' queue - printing still works, just without station isolation."
+        if (-not $response.success) {
+            throw "Activation endpoint returned failure: $($response.message)"
         }
-    } else {
-        Write-Warn2 "No -ActivationToken given - queue worker will use the shared 'default' queue (no station isolation)."
+
+        $posRegisterId = $response.pos_info.id
+        $posRegisterCode = $response.pos_info.code
+        Set-EnvValue $envPath "POS_REGISTER_ID" $posRegisterId
+        Set-EnvValue $envPath "POS_REGISTER_CODE" $posRegisterCode
+        $script:posRegisterQueueName = "pos-register-$posRegisterId,default"
+        Write-Ok "Station activated as $posRegisterCode (id=$posRegisterId)"
+    } catch {
+        Write-Warn2 "Station activation failed: $($_.Exception.Message)"
+        Write-Warn2 "Generate a fresh activation token from the admin panel (tokens expire after 15 minutes) and re-run this script."
+        throw "Aborting install - this station would have broken printing without a valid PosRegister activation."
     }
 }
 finally {
