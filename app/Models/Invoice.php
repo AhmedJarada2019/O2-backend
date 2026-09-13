@@ -26,6 +26,8 @@ class Invoice extends Model
         'customer_phone',
         'entity_type',
         'entity_id',
+        'entity_name',
+        'entity_number',
         'branch_id',
         'status',
         'currency',
@@ -105,6 +107,58 @@ class Invoice extends Model
     public function customer(): BelongsTo
     {
         return $this->belongsTo(Customer::class);
+    }
+
+    /**
+     * الكيان صاحب الفاتورة عند البيع "على الحساب" (مورد/زبون/موظف) — بديل
+     * عام عن customer() يغطي الأنواع الثلاثة عبر entity_type/entity_id.
+     */
+    public function entity(): ?Model
+    {
+        if (! $this->entity_type || ! $this->entity_id) {
+            return null;
+        }
+
+        return match ($this->entity_type) {
+            'customer' => Customer::find($this->entity_id),
+            'supplier' => Supplier::find($this->entity_id),
+            'employee' => Employee::find($this->entity_id),
+            default => null,
+        };
+    }
+
+    /**
+     * لقطة (snapshot) اسم ورقم الكيان وقت إنشاء الفاتورة — تُستخدم بدل الاستعلام
+     * الحي عن الكيان حتى لا يتغيّر عرض فاتورة قديمة إذا تغيّر اسم/رقم الزبون
+     * أو المورد أو الموظف لاحقاً (نفس مبدأ snapshot المطبّق في invoice_items).
+     *
+     * @return array{name: ?string, number: ?string}
+     */
+    public static function resolveEntitySnapshot(?string $entityType, ?int $entityId): array
+    {
+        if (! $entityType || ! $entityId) {
+            return ['name' => null, 'number' => null];
+        }
+
+        $model = match ($entityType) {
+            'customer' => Customer::find($entityId),
+            'supplier' => Supplier::find($entityId),
+            'employee' => Employee::find($entityId),
+            default => null,
+        };
+
+        if (! $model) {
+            return ['name' => null, 'number' => null];
+        }
+
+        return [
+            'name' => $model->name,
+            // للموظف: الرقم الوظيفي (employeeId) هو المعرّف المتعارف عليه، وليس
+            // الهاتف. للزبون/المورد: الهاتف أولاً ثم الكود كبديل.
+            'number' => $entityType === 'employee'
+                ? ($model->employeeId ?? null)
+                : ($model->phone ?? $model->mobile ?? $model->code ?? null),
+        ];
     }
 
     /** نقطة البيع التي أُنشئت منها الفاتورة */

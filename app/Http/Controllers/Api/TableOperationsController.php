@@ -158,7 +158,7 @@ class TableOperationsController extends Controller
             ], 422);
         }
 
-        if ($table->status !== 'AVAILABLE' && $table->status !== 'RESERVED') {
+        if ($table->status !== 'AVAILABLE') {
             return response()->json([
                 'success' => false,
                 'message' => 'الطاولة غير متاحة للتسكين (الحالة الحالية: ' . $table->status . ')'
@@ -199,7 +199,7 @@ class TableOperationsController extends Controller
         }
 
         $request->validate([
-            'status' => 'required|in:AVAILABLE,OCCUPIED,PAYMENT_PENDING,BILL_PRINTED,PAID,RESERVED,CLEANING,MERGED',
+            'status' => 'required|in:AVAILABLE,OCCUPIED,PAYMENT_PENDING,BILL_PRINTED,PAID,CLEANING,MERGED',
             'current_order_id' => 'nullable|integer',
             'customer_count' => 'nullable|integer',
         ]);
@@ -218,6 +218,7 @@ class TableOperationsController extends Controller
             $updateData['seated_at'] = null;
             $updateData['customer_count'] = 0;
             $updateData['last_order_at'] = now();
+            $updateData['waiter_called_at'] = null;
         } elseif ($request->status === 'OCCUPIED') {
             if ($request->has('current_order_id')) {
                 $updateData['current_order_id'] = $request->input('current_order_id');

@@ -12,6 +12,7 @@ use App\Models\Branch;
 use App\Models\Customer;
 use App\Models\Employee;
 use App\Models\Invoice;
+use App\Models\InvoiceItem;
 use App\Models\Order;
 use App\Models\Payment;
 use App\Models\Supplier;
@@ -25,6 +26,7 @@ use App\Services\Invoice\InvoiceFromOrderService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Validation\Rule;
 
 class InvoiceController extends ApiController
 {
@@ -219,6 +221,14 @@ $invoice = $this->invoiceFromOrderService->createFromOrder(
             $newPaid = $invoice->fresh()->paidAmount();
             $journalEntry = null;
 
+            \Log::info('[TRACE addPayment]', [
+                'invoice_id' => $invoice->id,
+                'order_id' => $invoice->order_id,
+                'new_paid' => $newPaid,
+                'invoice_total' => (float) $invoice->total,
+                'will_close' => $newPaid >= (float) $invoice->total - 0.001,
+            ]);
+
             if ($newPaid >= (float) $invoice->total - 0.001) {
                 // 'mixed' لو الفاتورة اندفعت بأكثر من طريقة، وإلا الطريقة الوحيدة
                 $summaryMethod = Payment::summaryMethodForInvoice($invoice->id) ?? $data['method'];
@@ -235,7 +245,11 @@ $invoice = $this->invoiceFromOrderService->createFromOrder(
                 ]);
 
                 if ($invoice->order_id) {
-                    $invoice->order()->update(['status' => 'paid']);
+                    $invoice->order()->update([
+                        'status' => 'paid',
+                        'payment_status' => 'PAID',
+                        'paid_at' => now(),
+                    ]);
 
                     // تحصيل الفاتورة اكتمل → نغلق الطاولة ونرجعها لحالتها الطبيعية.
                     $paidOrder = Order::withoutGlobalScope(\App\Models\Scopes\BranchScope::class)
@@ -304,6 +318,13 @@ $invoice = $this->invoiceFromOrderService->createFromOrder(
             $query->where('order_id', $request->order_id);
         }
 
+        // كشف حساب مورد/زبون/موظف: كل فواتيره عبر entity_type + entity_id
+        // (نفس زوج subledger_type/subledger_id المستخدم في المحاسبة).
+        if ($request->filled('entity_type') && $request->filled('entity_id')) {
+            $query->where('entity_type', $request->entity_type)
+                ->where('entity_id', $request->entity_id);
+        }
+
         if ($request->has('status') && $request->status !== '') {
             $query->where('status', $request->status);
         }
@@ -320,6 +341,8 @@ $invoice = $this->invoiceFromOrderService->createFromOrder(
             $search = $request->search;
             $query->where(function ($q) use ($search) {
                 $q->where('number', 'like', "%{$search}%")
+                    ->orWhere('entity_name', 'like', "%{$search}%")
+                    ->orWhere('entity_number', 'like', "%{$search}%")
                     ->orWhereHas('order', function ($q) use ($search) {
                         $q->where('order_number', 'like', "%{$search}%");
                     })
@@ -415,7 +438,18 @@ $invoice = $this->invoiceFromOrderService->createFromOrder(
         $validated = $request->validate([
             'type' => 'nullable|string',
             'entity_type' => 'nullable|string|in:customer,employee,supplier',
-            'entity_id' => 'nullable|integer',
+            'entity_id' => [
+                'nullable',
+                'integer',
+                Rule::when($request->filled('entity_type'), function () use ($request) {
+                    return Rule::exists(match ($request->input('entity_type')) {
+                        'customer' => 'customers',
+                        'employee' => 'employees',
+                        'supplier' => 'suppliers',
+                        default => 'customers',
+                    }, 'id');
+                }),
+            ],
             'branch_id' => 'required|integer|exists:branches,id',
             'currency' => 'nullable|string|max:10',
             'reference_number' => 'nullable|string|max:100',
@@ -456,12 +490,20 @@ $invoice = $this->invoiceFromOrderService->createFromOrder(
                 $totalPaid = collect($validated['payments'])->sum('amount');
             }
 
+            $entitySnapshot = Invoice::resolveEntitySnapshot(
+                $validated['entity_type'] ?? null,
+                $validated['entity_id'] ?? null,
+            );
+
             $invoice = Invoice::create([
                 'number' => Invoice::generateNumber(),
                 'type' => $validated['type'] ?? 'فاتورة ضريبية',
                 'entity_type' => $validated['entity_type'] ?? null,
                 'entity_id' => $validated['entity_id'] ?? null,
+                'entity_name' => $entitySnapshot['name'],
+                'entity_number' => $entitySnapshot['number'],
                 'customer_id' => $validated['entity_type'] === 'customer' ? $validated['entity_id'] : null,
+                'customer_name' => $validated['entity_type'] === 'customer' ? $entitySnapshot['name'] : null,
                 'branch_id' => $validated['branch_id'],
                 'status' => $totalPaid >= $validated['total'] - 0.001 ? 'paid' : ($totalPaid > 0 ? 'partial' : 'draft'),
                 'currency' => $validated['currency'] ?? 'SAR',
@@ -534,7 +576,18 @@ $invoice = $this->invoiceFromOrderService->createFromOrder(
         $validated = $request->validate([
             'type' => 'nullable|string',
             'entity_type' => 'nullable|string|in:customer,employee,supplier',
-            'entity_id' => 'nullable|integer',
+            'entity_id' => [
+                'nullable',
+                'integer',
+                Rule::when($request->filled('entity_type'), function () use ($request) {
+                    return Rule::exists(match ($request->input('entity_type')) {
+                        'customer' => 'customers',
+                        'employee' => 'employees',
+                        'supplier' => 'suppliers',
+                        default => 'customers',
+                    }, 'id');
+                }),
+            ],
             'branch_id' => 'required|integer|exists:branches,id',
             'currency' => 'nullable|string|max:10',
             'reference_number' => 'nullable|string|max:100',
@@ -566,11 +619,19 @@ $invoice = $this->invoiceFromOrderService->createFromOrder(
 
         DB::beginTransaction();
         try {
+            $entitySnapshot = Invoice::resolveEntitySnapshot(
+                $validated['entity_type'] ?? null,
+                $validated['entity_id'] ?? null,
+            );
+
             $invoice->update([
                 'type' => $validated['type'] ?? $invoice->type,
                 'entity_type' => $validated['entity_type'] ?? null,
                 'entity_id' => $validated['entity_id'] ?? null,
+                'entity_name' => $entitySnapshot['name'],
+                'entity_number' => $entitySnapshot['number'],
                 'customer_id' => $validated['entity_type'] === 'customer' ? $validated['entity_id'] : null,
+                'customer_name' => $validated['entity_type'] === 'customer' ? $entitySnapshot['name'] : $invoice->customer_name,
                 'branch_id' => $validated['branch_id'],
                 'currency' => $validated['currency'] ?? $invoice->currency,
                 'reference_number' => $validated['reference_number'] ?? $invoice->reference_number,
