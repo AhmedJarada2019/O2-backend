@@ -199,7 +199,7 @@ class TableOperationsController extends Controller
         }
 
         $request->validate([
-            'status' => 'required|in:AVAILABLE,OCCUPIED,PAYMENT_PENDING,PAID,RESERVED,CLEANING,MERGED',
+            'status' => 'required|in:AVAILABLE,OCCUPIED,PAYMENT_PENDING,BILL_PRINTED,PAID,RESERVED,CLEANING,MERGED',
             'current_order_id' => 'nullable|integer',
             'customer_count' => 'nullable|integer',
         ]);

@@ -1037,6 +1037,13 @@ class OrderController extends ApiController
             $posRegisterId ? (int) $posRegisterId : null,
         )->onQueue($queue);
 
+        // طباعة فاتورة الزبون → الطاولة تضوي أزرق (BILL_PRINTED). نستثني وضع
+        // 'departments' لأنه طباعة تذاكر أقسام مش فاتورة زبون. نضبط الحالة هون
+        // (مش داخل الـ Job) حتى تكون موثوقة بغض النظر عن نجاح الطباعة الفعلي.
+        if ($mode !== 'departments') {
+            $order->markDiningTableBillPrinted();
+        }
+
         return $this->success('تم إرسال أمر طباعة الفاتورة');
     }
 

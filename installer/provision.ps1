@@ -124,10 +124,36 @@ Write-Ok "php.ini ready (intl, pdo_mysql, mbstring, fileinfo, curl, gd, openssl,
 # Verify PHP actually loads them
 $prevEap0 = $ErrorActionPreference
 $ErrorActionPreference = "Continue"
-$loadedExtensions = (& $phpExe -m 2>&1) | ForEach-Object { $_.Trim().ToLower() }
+# 2>&1 on a native exe can hand back ErrorRecord objects (not plain
+# strings) for any line PHP writes to stderr - even a harmless notice.
+# ErrorRecord has no .Trim() method, so piping straight into .Trim()
+# throws MethodNotFound the moment php -m emits anything on stderr,
+# corrupting this whole check (non-fatally: it kept running, just
+# reported false "extension missing" warnings for extensions that were
+# actually loaded fine). Cast to [string] first so both normal output
+# and ErrorRecord lines go through ToString() instead.
+$loadedExtensions = (& $phpExe -m 2>&1) | ForEach-Object { ([string]$_).Trim().ToLower() }
 $ErrorActionPreference = $prevEap0
 foreach ($ext in $requiredExtensions) {
     if ($loadedExtensions -notcontains $ext.ToLower()) {
+        if ($ext.ToLower() -eq "intl") {
+            # Not a "check manually, might be fine" case like the other
+            # extensions - confirmed fatal on POS-018 (cashier3, 2026-09-11):
+            # mike42/escpos-php's CapabilityProfile::load() calls
+            # IntlBreakIterator (from the intl extension) on every single
+            # print attempt, so a station missing intl has printing
+            # completely broken, not degraded, and nobody notices until a
+            # cashier tries to print and gets nothing. Root cause that time
+            # was the Visual C++ Redistributable being missing on a fresh
+            # Windows machine - PHP's intl DLL depends on it to load at all,
+            # and the resulting Windows error ("The specified module could
+            # not be found") misleadingly points at php_intl.dll itself
+            # instead of the real missing dependency.
+            Write-Warn2 "Extension 'intl' failed to load - this WILL break every print attempt (mike42/escpos-php requires it)."
+            Write-Warn2 "Most likely cause: Visual C++ Redistributable x64 is missing on this machine."
+            Write-Warn2 "Install it from https://aka.ms/vs/17/release/vc_redist.x64.exe, reboot, then re-run this script."
+            throw "Aborting install - 'intl' extension not loaded, printing would be completely broken on this station."
+        }
         Write-Warn2 "Extension '$ext' did not show up in 'php -m' - check manually if printing breaks."
     }
 }
