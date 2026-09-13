@@ -16,7 +16,13 @@ class UpdateOrderRequest extends FormRequest
         return [
             'order_type' => 'sometimes|in:dine_in,takeaway,delivery',
             'is_fawri' => 'sometimes|boolean',
-            'status' => 'sometimes|in:pending,confirmed,in_progress,ready,served,paid,cancelled,pending_payment',
+            // 'paid' و'cancelled' ممنوعان هون عمداً — لهما مسار مخصص لازم يمر فيه
+            // (POST /orders/{id}/settle عبر SettlementEngine، وPOST /orders/{id}/cancel)
+            // لأنهما يرتبطان بمحاسبة حقيقية (فاتورة/دفعة/قيد محاسبي) وبتحرير الطاولة
+            // (releaseDiningTable). تمرير الحالة مباشرة هون كان يسمح بتعليم الطلب
+            // "مدفوع" بدون أي دفعة فعلية، بدون قيد محاسبي، وبدون ما تتحرر الطاولة —
+            // فتضل عالقة على أخضر/أزرق للأبد.
+            'status' => 'sometimes|in:pending,confirmed,in_progress,ready,served,pending_payment',
             'table_number' => 'nullable|string|max:50',
             'payment_method' => 'nullable|string|max:50',
             'customer_name' => 'nullable|string|max:255',

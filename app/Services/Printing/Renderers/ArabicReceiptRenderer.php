@@ -76,10 +76,10 @@ class ArabicReceiptRenderer implements ReceiptRendererInterface
      *                                 ReceiptImageBuilder::buildFilteredInvoiceReceipt).
      * @return string                  Path to the generated PNG file
      */
-    public function renderFilteredInvoice(Order $order, string $printerName, array $items, bool $showOrderTotals = false): string
+    public function renderFilteredInvoice(Order $order, string $printerName, array $items, bool $showOrderTotals = false, bool $hidePrices = false): string
     {
         try {
-            return $this->builder->buildFilteredInvoiceReceipt($order, $printerName, $items, $showOrderTotals);
+            return $this->builder->buildFilteredInvoiceReceipt($order, $printerName, $items, $showOrderTotals, $hidePrices);
         } catch (\Exception $e) {
             Log::error('Failed to render filtered invoice image', [
                 'error' => $e->getMessage(),

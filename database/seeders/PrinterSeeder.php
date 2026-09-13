@@ -4,7 +4,6 @@ namespace Database\Seeders;
 
 use App\Models\Branch;
 use App\Models\Department;
-use App\Models\PosRegister;
 use App\Models\Printer;
 use Illuminate\Database\Seeder;
 use Illuminate\Support\Facades\DB;
@@ -12,16 +11,11 @@ use Illuminate\Support\Facades\DB;
 /**
  * PrinterSeeder
  * ─────────────────────────────────────────────────────────────
- * يحذف كل الطابعات القديمة وينشئ 10 طابعات فرع غزة الحقيقية + طابعة
- * الكاشير، ويربط كل طابعة بأقسامها عبر printer_department (هو ما تقرأه
+ * يحذف كل الطابعات القديمة وينشئ 10 طابعات فرع غزة الحقيقية،
+ * ويربط كل طابعة بأقسامها عبر printer_department (هو ما تقرأه
  * PrintRoutingService / DirectPrintRoutingService للتوجيه).
  *
  * طابعات "تجميع" و"تيك أوي" تُنشأ بدون ربط أقسام (نقاط تجميع).
- *
- * طابعة الكاشير (CASHIER) موصولة USB بجهاز الكاشير نفسه — ip_address
- * تشاور على جسر الطباعة المحلي (127.0.0.1:9100 عبر print-bridge.php)
- * بدل مشاركة SMB عبر الشبكة اللي كانت عرضة لمشاكل صلاحيات/بروتوكول.
- * راجع print-bridge.php و start-print-bridge.bat لتفاصيل التشغيل.
  *
  * التشغيل:  php artisan db:seed --class=PrinterSeeder
  */
@@ -79,27 +73,8 @@ class PrinterSeeder extends Seeder
                     $printer->departments()->sync($ids);
                 }
             }
-
-            // 4. طابعة الكاشير — USB محلي عبر جسر الطباعة (127.0.0.1:9100)، لا تُربط
-            //    بأقسام بل بجهاز كاشير (POS register) محدد
-            $cashierRegister = PosRegister::where('branch_id', $gaza->id)->first();
-
-            if ($cashierRegister) {
-                Printer::create([
-                    'branch_id' => $gaza->id,
-                    'name' => 'كاشير رئيسي',
-                    'ip_address' => '127.0.0.1',
-                    'port' => '9100',
-                    'type' => 'CASHIER',
-                    'linked_pos_register_id' => $cashierRegister->id,
-                    'is_active' => true,
-                    'print_on_direct' => false,
-                ]);
-            } else {
-                $this->command?->warn('⚠️ ما فيه جهاز كاشير (POS register) لفرع غزة — تخطّينا إنشاء طابعة الكاشير');
-            }
         });
 
-        $this->command?->info('✅ حُذفت الطابعات القديمة وأُنشئت 10 طابعات + طابعة الكاشير لفرع غزة مع ربط الأقسام');
+        $this->command?->info('✅ حُذفت الطابعات القديمة وأُنشئت 10 طابعات لفرع غزة مع ربط الأقسام');
     }
 }

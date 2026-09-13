@@ -36,15 +36,16 @@ class InvoiceResource extends JsonResource
             }
         }
 
-        $entityName = null;
-        if ($this->entity_type && $this->entity_id) {
-            $entityModel = match ($this->entity_type) {
-                'customer' => \App\Models\Customer::find($this->entity_id),
-                'employee' => \App\Models\Employee::find($this->entity_id),
-                'supplier' => \App\Models\Supplier::find($this->entity_id),
-                default => null,
-            };
-            $entityName = $entityModel?->name ?? $entityModel?->full_name ?? null;
+        // نفضّل الـ snapshot المحفوظ وقت إنشاء الفاتورة (entity_name/entity_number)
+        // على الاستعلام الحي — حتى لا يتغيّر اسم/رقم فاتورة قديمة إذا عُدِّل
+        // اسم الزبون/المورد/الموظف لاحقاً. الاستعلام الحي يبقى fallback فقط
+        // للفواتير القديمة التي أُنشئت قبل إضافة الـ snapshot.
+        $entityName = $this->entity_name;
+        $entityNumber = $this->entity_number;
+        if (($entityName === null || $entityNumber === null) && $this->entity_type && $this->entity_id) {
+            $liveSnapshot = \App\Models\Invoice::resolveEntitySnapshot($this->entity_type, $this->entity_id);
+            $entityName ??= $liveSnapshot['name'];
+            $entityNumber ??= $liveSnapshot['number'];
         }
 
         $branchName = null;
@@ -60,6 +61,7 @@ class InvoiceResource extends JsonResource
             'entity_type' => $this->entity_type,
             'entity_id' => $this->entity_id,
             'entity_name' => $entityName,
+            'entity_number' => $entityNumber,
             'branch_id' => $this->branch_id,
             'branch_name' => $branchName,
             'customer_id' => $this->customer_id,

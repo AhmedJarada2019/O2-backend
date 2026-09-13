@@ -326,27 +326,17 @@ class OrderPrintingService
             ];
         }
 
-        // نرندر كل تذاكر الأقسام أول (هيك بيضل تسلسلي عبر render-server عن
-        // قصد - Puppeteer ما بتتحمل رندرات متزامنة بشكل مستقر)، وبعدين
-        // نطبعهم كلهم بنفس اتصال الطابعة الواحد بدل فتح/قفل اتصال منفصل
-        // لكل قسم. الاتصال المنفصل لكل تذكرة كان عبء حقيقي (TCP handshake +
-        // تهيئة السائق) يتكرر بلا داعي رغم إنهم كلهم رايحين لنفس الطابعة
-        // بالضبط - جزء ملموس من وقت الطباعة الكلي لطلب "فوري" متعدد الأقسام.
-        //
         // كل نسخ "فوري" بتطبع على نفس طابعة الكاشير وهي فعلياً فاتورة الزبون
         // نفسها (مقسّمة بالعرض بس لسهولة القراءة) — مش تذاكر أقسام منفصلة زي
-        // وضع "محلي". نظهر الخصم والمجموع الكلي الحقيقي على آخر نسخة فقط،
-        // متل "تابع" بآخر صفحة من فاتورة متعددة الصفحات.
-        $imagePaths = [];
-        $labels = [];
-        $itemCounts = [];
-        $lastKey = array_key_last($groups);
-        foreach ($groups as $key => $group) {
-            $imagePaths[] = $this->receiptRenderer->renderFilteredInvoice(
+        // وضع "محلي". ما بنعرض أي مجاميع على نسخ الأقسام (لا خصم ولا إجمالي)؛
+        // الخصم مخزّن ومخصوم من إجمالي الطلب/الفاتورة بس.
+        $results = [];
+        foreach ($groups as $group) {
+            $imagePath = $this->receiptRenderer->renderFilteredInvoice(
                 $order,
                 $group['label'],
                 $group['items'],
-                $key === $lastKey
+                false
             );
             $labels[] = $group['label'];
             $itemCounts[] = count($group['items']);
@@ -420,7 +410,9 @@ class OrderPrintingService
         $results = [];
         foreach ($groupedByPrinter as $group) {
             $printer = $group['printer'];
-            $result = $this->printInvoiceForItems($order, $printer, $group['items']);
+            // نسخة القسم (زر "طباعة" بمحلي) — بلا أسعار ولا مجاميع، بس الاسم
+            // والكمية والملاحظات لطاقم القسم.
+            $result = $this->printInvoiceForItems($order, $printer, $group['items'], true);
 
             $results[] = array_merge($result, [
                 'printer_id'   => $printer->id,
@@ -529,13 +521,16 @@ class OrderPrintingService
     private function printInvoiceForItems(
         Order $order,
         Printer $printer,
-        array $items
+        array $items,
+        bool $hidePrices = false
     ): array {
         // بناء صورة الفاتورة مع الأصناف المفلترة فقط
         $imagePath = $this->receiptRenderer->renderFilteredInvoice(
             $order,
             $printer->name,
-            $items
+            $items,
+            false,
+            $hidePrices
         );
 
         $result = $this->printerService->printReceiptImage($printer, $imagePath);

@@ -1044,6 +1044,14 @@ class OrderController extends ApiController
             $order->markDiningTableBillPrinted();
         }
 
+        // طباعة فاتورة الزبون → الطاولة تضوي أزرق (BILL_PRINTED). نستثني وضع
+        // 'merged' (زر "فاتورة فقط" بالكاشير — فاتورة معاينة سريعة) لأنه ما
+        // بيمثّل طباعة الفاتورة الرسمية للطاولة. نضبط الحالة هون (مش داخل
+        // الـ Job) حتى تكون موثوقة بغض النظر عن نجاح الطباعة الفعلي.
+        if ($mode !== 'merged') {
+            $order->markDiningTableBillPrinted();
+        }
+
         return $this->success('تم إرسال أمر طباعة الفاتورة');
     }
 

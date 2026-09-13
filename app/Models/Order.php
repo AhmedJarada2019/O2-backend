@@ -228,6 +228,14 @@ class Order extends Model
     {
         $table = $this->resolveDiningTable();
 
+        $blocked = $table ? $this->tableStillHasActiveOrders($table) : null;
+        \Log::info('[TRACE releaseDiningTable]', [
+            'order_id' => $this->id,
+            'table_resolved' => $table?->id,
+            'table_status_before' => $table?->status,
+            'blocked_by_other_active_order' => $blocked,
+        ]);
+
         if ($table && ! $this->tableStillHasActiveOrders($table)) {
             $table->setAvailable();
         }
