@@ -955,7 +955,7 @@ class OrderController extends ApiController
      * Chrome كامل، لا يجوز حجز الـ request عليه). الاستجابة هون تأكيد إرسال
      * أمر الطباعة فقط، مش تأكيد نجاح الطباعة الفعلي على الطابعة.
      */
-    public function printInvoice(Order $order): JsonResponse
+    public function printInvoice(Order $order, \App\Services\Printing\OrderPrintingService $printingService): JsonResponse
     {
         // قفل قصير جداً يمنع بس تكرار فعلي بنفس اللحظة (ضغطة مزدوجة/طلب
         // مكرر من الواجهة خلال نفس الثانية) — مش مقصود يمنع إعادة طباعة
@@ -968,20 +968,81 @@ class OrderController extends ApiController
 
         $printerId = request('printer_id');
 
+        // هوية محطة الكاشير الفعلية يلي طلبت الطباعة (posInfo.id بالواجهة،
+        // مُخزّن وقت تفعيل الجهاز). لازم نثق فيها بدل ما "نخمّن" أي طابعة
+        // كاشير فعّالة بالفرع - التخمين هو يلي كان يسبب طباعة فاتورة محطة
+        // على طابعة محطة تانية بالغلط لما يصير أكتر من محطة كاشير بنفس الفرع.
+        $posRegisterId = request('pos_register_id');
+
+        // بدون printer_id ولا pos_register_id، ما في طريقة مضمونة نعرف
+        // منها لأي طابعة لازم تروح الفاتورة - وقف هون بدل ما "نخمّن" أي
+        // طابعة كاشير فعّالة بالفرع. هاد التخمين كان موجود سابقاً "للتوافق
+        // العكسي"، لكن ثبت فعلياً إنه خطير بمجرد ما يصير أكتر من طابعة
+        // كاشير فعّالة بالفرع (زي واجهة الإدارة /admin/pos اللي بتفتح
+        // الكاشير بدون جهاز مفعّل حقيقي): التخمين كان يوجّه فواتير حقيقية
+        // لمحطات عشوائية مختلفة كل مرة بدل ما يفشل بوضوح.
+        if (!$printerId && !$posRegisterId) {
+            \Log::warning('printInvoice: rejected - no printer_id or pos_register_id', [
+                'order_id'    => $order->id,
+                'all_input'   => request()->all(),
+                'device_uuid' => request()->header('X-Device-UUID'),
+                'user_id'     => auth()->id(),
+            ]);
+            $lock->release();
+            return response()->json([
+                'success' => false,
+                'message' => 'يجب تحديد الطابعة أو محطة الكاشير قبل الطباعة. لو بتطبع من واجهة الإدارة، حدد الطابعة صراحة.',
+            ], 422);
+        }
+
         // mode: 'all' | 'merged' | 'departments' | 'fawri' (فاتورة كل قسم على طابعة الكاشير)
         $mode = request('mode', 'all');
         if (!in_array($mode, ['all', 'merged', 'departments', 'fawri'], true)) {
             $mode = 'all';
         }
 
-        // dispatchAfterResponse: تنفّذ بنفس عملية PHP بعد إرسال الرد للمتصفّح،
-        // بدون الاعتماد على queue worker خارجي (كان لازم يضل شغّال وإلا ما بتطبع).
-        PrintInvoiceJob::dispatchAfterResponse(
+        // لازم تمر عبر queue حقيقي (مو dispatchAfterResponse) لأن طابعة الكاشير
+        // USB (127.0.0.1) لازم تُنفَّذ فعلياً على جهاز الكاشير نفسه عبر queue:work
+        // الشغال عنده محلياً (start-queue-worker.bat) — dispatchAfterResponse كانت
+        // تنفّذ على السيرفر المركزي مباشرة، فكان "127.0.0.1" يرجع لحاله (السيرفر)
+        // بدل جهاز الكاشير، فتفشل الطباعة دايماً بـ Connection refused.
+        //
+        // ->onQueue(...) بتوجّه الوظيفة لقائمة خاصة بنقطة البيع (PosRegister)
+        // المرتبطة بالطابعة المستهدفة، بدل قائمة "default" المشتركة بين كل
+        // محطات الكاشير — هيك مستحيل queue worker بمحطة تانية ياخد طلب مش
+        // الو ويطبعه غلط على طابعة تانية. راجع resolveQueueForOrder().
+        $queue = $printingService->resolveQueueForOrder(
+            $order,
+            $printerId ? (int) $printerId : null,
+            $posRegisterId ? (int) $posRegisterId : null,
+        );
+
+        // تشخيص مؤقت لمتابعة تسريبات الطباعة بين المحطات - راقب هاد اللوغ
+        // لو صارت فاتورة محطة تطبع على طابعة محطة تانية بالغلط: لو
+        // received_pos_register_id طلعت null رغم إنه الكاشير مفعّل، المشكلة
+        // بالواجهة (نسخة JS قديمة ما بترسل pos_register_id) مش بالسيرفر.
+        \Log::info('printInvoice: routing decision', [
+            'order_id'                 => $order->id,
+            'branch_id'                => $order->branch_id,
+            'received_printer_id'      => $printerId,
+            'received_pos_register_id' => $posRegisterId,
+            'resolved_queue'           => $queue,
+        ]);
+
+        PrintInvoiceJob::dispatch(
             $order,
             $printerId ? (int) $printerId : null,
             auth()->id(),
             $mode,
-        );
+            $posRegisterId ? (int) $posRegisterId : null,
+        )->onQueue($queue);
+
+        // طباعة فاتورة الزبون → الطاولة تضوي أزرق (BILL_PRINTED). نستثني وضع
+        // 'departments' لأنه طباعة تذاكر أقسام مش فاتورة زبون. نضبط الحالة هون
+        // (مش داخل الـ Job) حتى تكون موثوقة بغض النظر عن نجاح الطباعة الفعلي.
+        if ($mode !== 'departments') {
+            $order->markDiningTableBillPrinted();
+        }
 
         // طباعة فاتورة الزبون → الطاولة تضوي أزرق (BILL_PRINTED). نستثني وضع
         // 'merged' (زر "فاتورة فقط" بالكاشير — فاتورة معاينة سريعة) لأنه ما

@@ -194,6 +194,25 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Render Server (رندر إيصالات دائم — أسرع من Browsershot)
+    |--------------------------------------------------------------------------
+    |
+    | خدمة Node/Puppeteer دائمة (render-server.js) تخلي Chrome مفتوح طول
+    | الوقت بدل ما ينفتح من الصفر كل إيصال. إذا مش شغّالة أو فشل الاتصال
+    | فيها، بيرجع النظام تلقائياً لـBrowsershot (أبطأ بس شغّال دايماً).
+    |
+    */
+
+    'render_server_enabled' => (bool) env('RENDER_SERVER_ENABLED', true),
+
+    'render_server_url' => env('RENDER_SERVER_URL', 'http://127.0.0.1:4790/render'),
+
+    'render_server_connect_timeout' => (float) env('RENDER_SERVER_CONNECT_TIMEOUT', 1),
+
+    'render_server_timeout' => (float) env('RENDER_SERVER_TIMEOUT', 8),
+
+    /*
+    |--------------------------------------------------------------------------
     | Receipt Layout
     |--------------------------------------------------------------------------
     |

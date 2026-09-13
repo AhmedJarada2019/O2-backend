@@ -7,7 +7,6 @@
     "license": "MIT",
     "require": {
         "php": "^8.2",
-        "doctrine/dbal": "^4.4",
         "khaled.alshamaa/ar-php": "^7.0.0",
         "laravel/framework": "^12.0",
         "laravel/sanctum": "^4.0",
@@ -16,7 +15,6 @@
         "mike42/escpos-php": "^5.0",
         "mpdf/mpdf": "^8.3.1",
         "spatie/browsershot": "^5.4",
-        "spatie/image": "^3.9",
         "spatie/laravel-permission": "^6.25"
     },
     "require-dev": {

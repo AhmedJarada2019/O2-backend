@@ -67,6 +67,22 @@ class PrinterService
     }
 
     /**
+     * Print several receipt images to the same printer over one connection.
+     */
+    public function printMultipleReceiptImages(Printer $printer, array $imagePaths): array
+    {
+        if (!$printer->is_active) {
+            return array_fill(0, count($imagePaths), $this->inactive($printer));
+        }
+
+        Log::info("Sending " . count($imagePaths) . " receipt images to [{$printer->name}] over one connection", [
+            'printer_id' => $printer->id,
+        ]);
+
+        return $this->driver->printMultipleReceiptImages($printer, $imagePaths);
+    }
+
+    /**
      * Print an image to the printer (no cut).
      */
     public function printImage(Printer $printer, string $imagePath): array

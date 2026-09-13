@@ -24,6 +24,7 @@ class PrintInvoiceJob implements ShouldQueue
         public ?int $printerId,
         public ?int $printedByUserId,
         public string $mode = 'all', // 'all' | 'merged' | 'departments'
+        public ?int $posRegisterId = null,
     ) {}
 
     public function handle(OrderPrintingService $printingService): void
@@ -44,7 +45,9 @@ class PrintInvoiceJob implements ShouldQueue
             $results = [$result];
         } else {
             // وضع "محلي" — حسب $mode: مدمجة + أقسام / مدمجة فقط / أقسام فقط.
-            $results = $printingService->printLocal($this->order, $this->mode);
+            // posRegisterId بيحدد طابعة الكاشير الصحيحة (محطة الطلب الفعلية)
+            // بدل أي طابعة كاشير فعّالة بالفرع - راجع resolveCashierPrinter().
+            $results = $printingService->printLocal($this->order, $this->mode, $this->posRegisterId);
             $success = collect($results)->every(fn($r) => $r['success'] ?? false);
         }
 

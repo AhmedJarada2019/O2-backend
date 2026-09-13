@@ -66,6 +66,7 @@ class InvoiceFromOrderService
             'total' => 0,
             'invoice_date' => now(),
             'notes' => $data['notes'] ?? $order->note,
+            'customer_phone' => $data['customer_phone'] ?? null,
             'pos_register_id' => $data['pos_register_id'] ?? null,
             'pos_code' => $data['pos_code'] ?? null,
             'pos_name' => $data['pos_name'] ?? null,
