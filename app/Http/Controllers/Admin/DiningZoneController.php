@@ -230,7 +230,7 @@ class DiningZoneController extends Controller
         $table = DiningTable::where('dining_zone_id', $zoneId)->findOrFail($tableId);
 
         $request->validate([
-            'status' => 'required|in:AVAILABLE,OCCUPIED,PAYMENT_PENDING,PAID,RESERVED,CLEANING,MERGED',
+            'status' => 'required|in:AVAILABLE,OCCUPIED,PAYMENT_PENDING,PAID,CLEANING,MERGED',
         ]);
 
         $table->update(['status' => $request->status]);

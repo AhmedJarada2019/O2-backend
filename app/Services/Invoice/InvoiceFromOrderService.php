@@ -35,6 +35,18 @@ class InvoiceFromOrderService
         $supplierId = $data['supplier_id'] ?? $order->supplier_id;
         $branchId = $order->branch_id;
 
+        // الفاتورة "على حساب" مين — أولوية العميل ثم الموظف ثم المورد (نفس
+        // ترتيب match(true) الموجود تحت لتسجيل استخدام الخصم). يُستخدم لاحقاً
+        // في كشف الحساب: كل فواتير مورد/زبون/موظف معيّن عبر entity_type/entity_id.
+        $entityType = match (true) {
+            $customerId !== null => 'customer',
+            $employeeId !== null => 'employee',
+            $supplierId !== null => 'supplier',
+            default => null,
+        };
+        $entityId = $customerId ?? $employeeId ?? $supplierId;
+        $entitySnapshot = Invoice::resolveEntitySnapshot($entityType, $entityId);
+
         // هاي الحقول كانت توصل بـ $data من الكنترولر وتنرمى — Invoice::create()
         // تحت ما كانت تستخدمها إطلاقاً، يعني pos_register_id/opened_by/currency
         // وغيرها كانت تضل NULL على كل فاتورة بترجع مربوطة بنقطة بيع.
@@ -42,6 +54,11 @@ class InvoiceFromOrderService
             'number' => Invoice::generateNumber(),
             'order_id' => $order->id,
             'customer_id' => $customerId,
+            'customer_phone' => $data['customer_phone'] ?? null,
+            'entity_type' => $entityType,
+            'entity_id' => $entityId,
+            'entity_name' => $entitySnapshot['name'],
+            'entity_number' => $entitySnapshot['number'],
             'branch_id' => $branchId,
             'status' => 'draft',
             'subtotal' => 0,
@@ -67,14 +84,20 @@ class InvoiceFromOrderService
 
         foreach ($orderItems as $orderItem) {
             $originalPrice = (float) $orderItem->price;
-            $quantity = (int) $orderItem->quantity;
+            // كمية حقيقية (عشرية مسموحة لأصناف الوزن). قبل هيك (int) كانت
+            // تحوّل 0.5 كيلو لـ 0 → سطر بصفر → subtotal الفاتورة يطلع غلط.
+            $quantity = (float) $orderItem->quantity;
+            if ($quantity <= 0) {
+                $quantity = 1.0;
+            }
+            $eligQuantity = max(1, (int) ceil($quantity));
             $lineGross = $originalPrice * $quantity;
             $grossSubtotal += $lineGross;
 
             try {
                 $bestDiscount = $this->discountEngine->getBestDiscount(
                     $originalPrice,
-                    $quantity,
+                    $eligQuantity,
                     $customerId,
                     $employeeId,
                     $supplierId,
@@ -128,14 +151,6 @@ class InvoiceFromOrderService
 
             if ($discountModel && $lineDiscount > 0) {
                 try {
-                    $entityType = match (true) {
-                        $customerId !== null => 'customer',
-                        $employeeId !== null => 'employee',
-                        $supplierId !== null => 'supplier',
-                        default => null,
-                    };
-                    $entityId = $customerId ?? $employeeId ?? $supplierId;
-
                     $this->discountEngine->logDiscountUsage(
                         $discountModel,
                         $lineGross,

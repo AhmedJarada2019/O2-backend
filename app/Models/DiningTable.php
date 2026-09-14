@@ -124,12 +124,7 @@ class DiningTable extends Model
         $this->update(['waiter_called_at' => null]);
     }
 
-    public function setReserved(): void
-    {
-        $this->update(['status' => 'RESERVED']);
-    }
-
-    public function setPendingConfirmation(): void
+public function setPendingConfirmation(): void
     {
         $this->update([
             'status' => 'PENDING_CONFIRMATION',
